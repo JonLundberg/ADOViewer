@@ -11,6 +11,7 @@ from adoviewer.csv_io import (
     build_azure_tree_csv,
     build_round_trip_csv,
     read_csv_file,
+    render_csv_text,
     write_azure_tree_csv,
     write_round_trip_csv,
 )
@@ -160,6 +161,20 @@ def test_write_azure_tree_csv_outputs_readable_utf8_sig_csv(tmp_path):
             "State": "New",
         },
     ]
+
+
+def test_render_csv_text_matches_writer_quoting():
+    text = render_csv_text(
+        ["Title", "Description"],
+        [
+            {
+                "Title": "Comma, quote \" and newline",
+                "Description": "Line 1\nLine 2",
+            },
+        ],
+    )
+
+    assert text == 'Title,Description\r\n"Comma, quote "" and newline","Line 1\nLine 2"\r\n'
 
 
 def test_round_trip_export_preserves_parent_id_field_order_and_custom_fields():

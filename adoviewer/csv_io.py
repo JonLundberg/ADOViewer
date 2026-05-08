@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import io
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -349,11 +350,7 @@ def azure_tree_extra_fieldnames(model: Any, id_col: str, type_col: str) -> list[
 
 def write_azure_tree_csv(model: Any, path: str) -> tuple[list[str], list[dict[str, str]]]:
     fieldnames, rows = build_azure_tree_csv(model)
-
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, dialect=csv.excel)
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(path, fieldnames, rows)
 
     return fieldnames, rows
 
@@ -439,13 +436,22 @@ def round_trip_title_level_fieldnames(
 
 def write_round_trip_csv(model: Any, path: str) -> tuple[list[str], list[dict[str, str]]]:
     fieldnames, rows = build_round_trip_csv(model)
-
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames, dialect=csv.excel)
-        writer.writeheader()
-        writer.writerows(rows)
+    write_csv_rows(path, fieldnames, rows)
 
     return fieldnames, rows
+
+
+def render_csv_text(fieldnames: list[str], rows: list[dict[str, str]]) -> str:
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=fieldnames, dialect=csv.excel)
+    writer.writeheader()
+    writer.writerows(rows)
+    return output.getvalue()
+
+
+def write_csv_rows(path: str, fieldnames: list[str], rows: list[dict[str, str]]) -> None:
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        f.write(render_csv_text(fieldnames, rows))
 
 
 def _remote_id_text(item: Any, model: Any) -> str:

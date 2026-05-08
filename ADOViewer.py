@@ -26,10 +26,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from adoviewer.csv_io import (
+    build_azure_tree_csv,
+    build_round_trip_csv,
     CsvExportError,
     read_csv_file,
-    write_azure_tree_csv,
-    write_round_trip_csv,
+    render_csv_text,
+    write_csv_rows,
 )
 from adoviewer.project_io import load_project_file, save_project_file
 from adoviewer.tree_model import WorkItemModel
@@ -536,82 +538,83 @@ class AdoWorkItemsViewer(tk.Tk):
             messagebox.showerror("Error", str(ex))
 
     def export_azure_tree_csv_dialog(self):
-        if not self.model:
-            messagebox.showinfo("Export Azure Tree CSV", "Open a CSV or add a root work item first.")
-            return
-
-        errors = [
-            message
-            for message in self.model.validate()
-            if message.severity == "error"
-        ]
-
-        if errors:
-            preview = "\n".join(f"- {message.message}" for message in errors[:10])
-            if len(errors) > 10:
-                preview += f"\n- ... {len(errors) - 10} more"
-            messagebox.showerror(
-                "Export Azure Tree CSV",
-                f"Fix validation errors before exporting.\n\n{preview}",
-            )
-            self.populate_tree(self.filter_var.get())
-            self.update_status()
-            return
-
-        path = filedialog.asksaveasfilename(
-            title="Export Azure Tree CSV",
-            defaultextension=".csv",
-            initialfile=self.default_export_filename("azure-tree"),
-            filetypes=[
-                ("CSV files", "*.csv"),
-                ("All files", "*.*"),
-            ],
+        self.show_export_preview(
+            "Export Azure Tree CSV",
+            "azure-tree",
+            build_azure_tree_csv,
         )
 
-        if not path:
+    def export_round_trip_csv_dialog(self):
+        self.show_export_preview(
+            "Export Round-Trip CSV",
+            "round-trip",
+            build_round_trip_csv,
+        )
+
+    def show_export_preview(self, title, suffix, build_export):
+        if not self.model:
+            messagebox.showinfo(title, "Open a CSV or add a root work item first.")
             return
 
         try:
-            fieldnames, rows = write_azure_tree_csv(self.model, path)
-            self.status_var.set(
-                f"Exported {len(rows)} work items and {len(fieldnames)} columns to {os.path.basename(path)}."
-            )
+            fieldnames, rows = build_export(self.model)
 
         except CsvExportError as ex:
-            messagebox.showerror("Export Azure Tree CSV", str(ex))
+            messagebox.showerror(title, str(ex))
             self.populate_tree(self.filter_var.get())
             self.update_status()
+            return
 
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
-
-    def export_round_trip_csv_dialog(self):
-        if not self.model:
-            messagebox.showinfo("Export Round-Trip CSV", "Open a CSV or add a root work item first.")
             return
 
-        errors = [
-            message
-            for message in self.model.validate()
-            if message.severity == "error"
-        ]
+        dialog = tk.Toplevel(self)
+        dialog.title(f"{title} Preview")
+        dialog.geometry("1000x650")
+        dialog.minsize(720, 420)
+        dialog.transient(self)
 
-        if errors:
-            preview = "\n".join(f"- {message.message}" for message in errors[:10])
-            if len(errors) > 10:
-                preview += f"\n- ... {len(errors) - 10} more"
-            messagebox.showerror(
-                "Export Round-Trip CSV",
-                f"Fix validation errors before exporting.\n\n{preview}",
-            )
-            self.populate_tree(self.filter_var.get())
-            self.update_status()
-            return
+        summary = ttk.Label(
+            dialog,
+            text=f"{len(rows)} work items, {len(fieldnames)} columns",
+        )
+        summary.pack(anchor="w", padx=12, pady=(12, 4))
 
+        text_frame = ttk.Frame(dialog)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+
+        preview_text = tk.Text(text_frame, wrap=tk.NONE)
+        preview_text.grid(row=0, column=0, sticky="nsew")
+        preview_text.insert(tk.END, render_csv_text(fieldnames, rows))
+        preview_text.configure(state=tk.DISABLED)
+
+        y_scroll = ttk.Scrollbar(text_frame, orient=tk.VERTICAL, command=preview_text.yview)
+        x_scroll = ttk.Scrollbar(text_frame, orient=tk.HORIZONTAL, command=preview_text.xview)
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        preview_text.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+
+        button_bar = ttk.Frame(dialog)
+        button_bar.pack(fill=tk.X, padx=12, pady=(0, 12))
+        ttk.Button(
+            button_bar,
+            text="Save...",
+            command=lambda: self.save_preview_export(dialog, title, suffix, fieldnames, rows),
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            button_bar,
+            text="Close",
+            command=dialog.destroy,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+    def save_preview_export(self, dialog, title, suffix, fieldnames, rows):
         path = filedialog.asksaveasfilename(
-            title="Export Round-Trip CSV",
+            title=title,
             defaultextension=".csv",
-            initialfile=self.default_export_filename("round-trip"),
+            initialfile=self.default_export_filename(suffix),
             filetypes=[
                 ("CSV files", "*.csv"),
                 ("All files", "*.*"),
@@ -622,15 +625,11 @@ class AdoWorkItemsViewer(tk.Tk):
             return
 
         try:
-            fieldnames, rows = write_round_trip_csv(self.model, path)
+            write_csv_rows(path, fieldnames, rows)
             self.status_var.set(
                 f"Exported {len(rows)} work items and {len(fieldnames)} columns to {os.path.basename(path)}."
             )
-
-        except CsvExportError as ex:
-            messagebox.showerror("Export Round-Trip CSV", str(ex))
-            self.populate_tree(self.filter_var.get())
-            self.update_status()
+            dialog.destroy()
 
         except Exception as ex:
             messagebox.showerror("Error", str(ex))

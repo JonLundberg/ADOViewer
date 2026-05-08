@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 4 - CSV Export**.
+Current position in the plan: **Milestone 5 - Azure DevOps Metadata and Client**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -43,7 +43,7 @@ Milestone 3 is complete:
 - A column chooser is available from the View menu and toolbar.
 - The chooser can show, hide, reset, and apply the tree's data columns without changing work item data, raw fields, or project contents.
 
-Milestone 4 has started:
+Milestone 4 is complete:
 
 - Azure-compatible tree CSV export is implemented with `Title N` hierarchy columns.
 - Exports are generated from the local tree in parent-before-child order, so new unsaved parent-child links do not need Azure IDs.
@@ -58,12 +58,22 @@ Milestone 4 has started:
 - Round-trip tests cover field order, custom fields, title-level hierarchy regeneration, and re-importing an exported hierarchy with commas, quotes, and newlines.
 - Azure tree CSV export blocks files with more than 1,000 active work items, matching the Azure DevOps web CSV import limit.
 - Row-limit tests cover the 1,000-item web import guard.
+- Both CSV export modes write only CSV field data and omit ADOViewer project metadata such as local IDs and local parent IDs.
+- Both export modes preserve custom/non-hierarchy CSV fields where valid.
+- Export commands now open a preview dialog that renders the full CSV text before saving.
+- Preview saving writes the same generated rows shown in the dialog.
+- CSV rendering tests cover quoting for commas, quotes, and newlines.
 
 ## Next Planned Work
 
-Next position in the plan: **Milestone 4 - CSV Export**.
+Next position in the plan: **Milestone 5 - Azure DevOps Metadata and Client**.
 
 Expected next work:
 
-- Exclude ADOViewer metadata and preserve custom fields.
-- Add export preview.
+- Add connection settings dialog.
+- Add PAT handling.
+- Implement REST client with timeouts and safe error messages.
+- Implement get relation types.
+- Implement get work item types/fields.
+- Implement batch get work items.
+- Add fake client tests.
