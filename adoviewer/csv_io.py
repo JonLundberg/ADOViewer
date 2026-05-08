@@ -11,6 +11,9 @@ class CsvExportError(ValueError):
     """Raised when a model cannot be exported to CSV."""
 
 
+AZURE_WEB_IMPORT_ITEM_LIMIT = 1000
+
+
 def normalize_column_name(name: str) -> str:
     return "".join(ch.lower() for ch in str(name).strip() if ch.isalnum())
 
@@ -279,6 +282,14 @@ def build_azure_tree_csv(model: Any) -> tuple[list[str], list[dict[str, str]]]:
         raise CsvExportError("Fix validation errors before exporting.")
 
     items_with_depth = iter_model_items_with_depth(model)
+
+    if len(items_with_depth) > AZURE_WEB_IMPORT_ITEM_LIMIT:
+        raise CsvExportError(
+            "Azure DevOps web CSV import supports at most "
+            f"{AZURE_WEB_IMPORT_ITEM_LIMIT} work items per file; "
+            f"this export contains {len(items_with_depth)}."
+        )
+
     max_depth = max((depth for _item, depth in items_with_depth), default=1)
     title_columns = [f"Title {level}" for level in range(1, max_depth + 1)]
     type_col = model.type_col or "Work Item Type"

@@ -56,6 +56,8 @@ Milestone 4 has started:
 - Round-trip exports regenerate `Title N` columns from the local tree when the source uses title-level hierarchy, including added depth columns for deeper local trees.
 - The File menu and toolbar can export round-trip CSV files after validation passes.
 - Round-trip tests cover field order, custom fields, title-level hierarchy regeneration, and re-importing an exported hierarchy with commas, quotes, and newlines.
+- Azure tree CSV export blocks files with more than 1,000 active work items, matching the Azure DevOps web CSV import limit.
+- Row-limit tests cover the 1,000-item web import guard.
 
 ## Next Planned Work
 
@@ -63,6 +65,5 @@ Next position in the plan: **Milestone 4 - CSV Export**.
 
 Expected next work:
 
-- Split or block web-import CSVs over 1,000 Work Items.
 - Exclude ADOViewer metadata and preserve custom fields.
 - Add export preview.

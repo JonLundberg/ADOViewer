@@ -120,6 +120,20 @@ def test_azure_tree_export_blocks_validation_errors():
         build_azure_tree_csv(model)
 
 
+def test_azure_tree_export_blocks_more_than_1000_work_items():
+    model = WorkItemModel(
+        ["ID", "Work Item Type", "Title"],
+        [],
+        local_id_factory=local_ids(),
+    )
+
+    for index in range(1001):
+        model.add_root(f"Task {index}", "Task")
+
+    with pytest.raises(CsvExportError, match="at most 1000 work items"):
+        build_azure_tree_csv(model)
+
+
 def test_write_azure_tree_csv_outputs_readable_utf8_sig_csv(tmp_path):
     model = WorkItemModel(
         ["ID", "Work Item Type", "Title", "State"],
