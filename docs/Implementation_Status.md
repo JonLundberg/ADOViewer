@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 3 - Editor UI**.
+Current position in the plan: **Milestone 4 - CSV Export**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -20,7 +20,7 @@ Milestone 2 is implemented in the model layer:
 
 Milestone 2 intentionally defers undo/redo. The implementation plan allows clear dirty tracking first if command objects are not worth the complexity yet.
 
-Milestone 3 has started:
+Milestone 3 is complete:
 
 - Toolbar and menu commands now call model operations for add root, add child, add sibling, edit title, delete/restore, move up/down, indent, outdent, and validate.
 - The tree includes a local status column for new, modified, deleted, warning, and error states.
@@ -40,11 +40,17 @@ Milestone 3 has started:
 - Project round-trip tests cover local ID, hierarchy, source path, original fields, and dirty-state preservation.
 - Tree expansion state is now preserved across edits, validation refreshes, and filter changes using stable local/synthetic node keys instead of transient Treeview item IDs.
 - Filtering opens matching ancestor paths temporarily so matches are visible, while clearing the filter restores the prior expansion state unless the user explicitly changed it.
+- A column chooser is available from the View menu and toolbar.
+- The chooser can show, hide, reset, and apply the tree's data columns without changing work item data, raw fields, or project contents.
 
 ## Next Planned Work
 
-Next position in the plan: **Milestone 3 - Editor UI**.
+Next position in the plan: **Milestone 4 - CSV Export**.
 
 Expected next work:
 
-- Add a column chooser.
+- Export Azure-compatible tree CSV with `Title N`.
+- Export round-trip CSV.
+- Split or block web-import CSVs over 1,000 Work Items.
+- Exclude ADOViewer metadata and preserve custom fields.
+- Add export preview.

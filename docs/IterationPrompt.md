@@ -1,0 +1,1 @@
+From file ADOViewer_Implementation_Plan.md implement the next idea in docs/Implementation_Status.md. Update Implementation_Status.md when done. Print out a commit title and message for the work that was done. 

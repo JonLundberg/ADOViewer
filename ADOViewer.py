@@ -53,6 +53,22 @@ class AdoWorkItemsViewer(tk.Tk):
         self.expanded_node_keys = set()
         self.displayed_filter_text = ""
         self.updating_tree = False
+        self.tree_column_specs = [
+            ("id", "ID", 75, 60, False),
+            ("local_status", "Status", 95, 80, False),
+            ("type", "Type", 130, 90, False),
+            ("state", "State", 110, 80, False),
+            ("assigned_to", "Assigned To", 180, 100, False),
+            ("effort", "Effort / Points / Estimate", 140, 90, False),
+            ("remaining", "Remaining", 90, 70, False),
+            ("completed", "Completed", 90, 70, False),
+            ("area", "Area", 180, 100, False),
+            ("iteration", "Iteration", 180, 100, False),
+            ("tags", "Tags", 220, 100, True),
+        ]
+        self.visible_tree_columns = [column_id for column_id, *_rest in self.tree_column_specs]
+        self.column_dialog = None
+        self.column_chooser_vars = {}
 
         self.create_widgets()
         self.create_menu()
@@ -91,6 +107,8 @@ class AdoWorkItemsViewer(tk.Tk):
         view_menu = tk.Menu(menu_bar, tearoff=False)
         view_menu.add_command(label="Expand All", command=self.expand_all)
         view_menu.add_command(label="Collapse All", command=self.collapse_all)
+        view_menu.add_separator()
+        view_menu.add_command(label="Columns...", command=self.show_column_chooser)
         view_menu.add_separator()
         view_menu.add_command(label="Clear Filter", command=self.clear_filter)
 
@@ -149,6 +167,7 @@ class AdoWorkItemsViewer(tk.Tk):
 
         ttk.Button(top_bar, text="Expand All", command=self.expand_all).pack(side=tk.LEFT, padx=(16, 0))
         ttk.Button(top_bar, text="Collapse All", command=self.collapse_all).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(top_bar, text="Columns...", command=self.show_column_chooser).pack(side=tk.LEFT, padx=(4, 0))
 
         self.status_var = tk.StringVar(value="Open an Azure DevOps CSV export to begin.")
         ttk.Label(top_bar, textvariable=self.status_var).pack(side=tk.RIGHT)
@@ -162,19 +181,7 @@ class AdoWorkItemsViewer(tk.Tk):
         paned.add(tree_frame, weight=4)
         paned.add(details_frame, weight=1)
 
-        columns = (
-            "id",
-            "local_status",
-            "type",
-            "state",
-            "assigned_to",
-            "effort",
-            "remaining",
-            "completed",
-            "area",
-            "iteration",
-            "tags",
-        )
+        columns = tuple(column_id for column_id, *_rest in self.tree_column_specs)
 
         self.tree = ttk.Treeview(
             tree_frame,
@@ -184,30 +191,19 @@ class AdoWorkItemsViewer(tk.Tk):
         )
 
         self.tree.heading("#0", text="Title")
-        self.tree.heading("id", text="ID")
-        self.tree.heading("local_status", text="Status")
-        self.tree.heading("type", text="Type")
-        self.tree.heading("state", text="State")
-        self.tree.heading("assigned_to", text="Assigned To")
-        self.tree.heading("effort", text="Effort / Points / Estimate")
-        self.tree.heading("remaining", text="Remaining")
-        self.tree.heading("completed", text="Completed")
-        self.tree.heading("area", text="Area")
-        self.tree.heading("iteration", text="Iteration")
-        self.tree.heading("tags", text="Tags")
 
         self.tree.column("#0", width=420, minwidth=250, stretch=True)
-        self.tree.column("id", width=75, minwidth=60, stretch=False)
-        self.tree.column("local_status", width=95, minwidth=80, stretch=False)
-        self.tree.column("type", width=130, minwidth=90, stretch=False)
-        self.tree.column("state", width=110, minwidth=80, stretch=False)
-        self.tree.column("assigned_to", width=180, minwidth=100, stretch=False)
-        self.tree.column("effort", width=140, minwidth=90, stretch=False)
-        self.tree.column("remaining", width=90, minwidth=70, stretch=False)
-        self.tree.column("completed", width=90, minwidth=70, stretch=False)
-        self.tree.column("area", width=180, minwidth=100, stretch=False)
-        self.tree.column("iteration", width=180, minwidth=100, stretch=False)
-        self.tree.column("tags", width=220, minwidth=100, stretch=True)
+
+        for column_id, heading, width, minwidth, stretch in self.tree_column_specs:
+            self.tree.heading(column_id, text=heading)
+            self.tree.column(
+                column_id,
+                width=width,
+                minwidth=minwidth,
+                stretch=stretch,
+            )
+
+        self.apply_visible_tree_columns()
 
         y_scroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.tree.yview)
         x_scroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.tree.xview)
@@ -305,6 +301,110 @@ class AdoWorkItemsViewer(tk.Tk):
         self.validation_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         self.validation_text.configure(state=tk.DISABLED)
         self.clear_details()
+
+    def apply_visible_tree_columns(self):
+        if not hasattr(self, "tree"):
+            return
+
+        known_columns = {column_id for column_id, *_rest in self.tree_column_specs}
+        self.visible_tree_columns = [
+            column_id
+            for column_id in self.visible_tree_columns
+            if column_id in known_columns
+        ]
+        self.tree.configure(displaycolumns=tuple(self.visible_tree_columns))
+
+    def show_column_chooser(self):
+        if self.column_dialog and self.column_dialog.winfo_exists():
+            self.column_dialog.lift()
+            self.column_dialog.focus_set()
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Choose Columns")
+        dialog.transient(self)
+        dialog.resizable(False, True)
+        dialog.protocol("WM_DELETE_WINDOW", self.close_column_chooser)
+
+        self.column_dialog = dialog
+        self.column_chooser_vars = {}
+
+        content = ttk.Frame(dialog)
+        content.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        for row_index, (column_id, heading, _width, _minwidth, _stretch) in enumerate(self.tree_column_specs):
+            var = tk.BooleanVar(value=column_id in self.visible_tree_columns)
+            checkbutton = ttk.Checkbutton(content, text=heading, variable=var)
+            checkbutton.grid(row=row_index, column=0, sticky="w", pady=2)
+            self.column_chooser_vars[column_id] = var
+
+        button_bar = ttk.Frame(content)
+        button_bar.grid(
+            row=len(self.tree_column_specs),
+            column=0,
+            sticky="ew",
+            pady=(12, 0),
+        )
+
+        ttk.Button(
+            button_bar,
+            text="Show All",
+            command=lambda: self.set_column_chooser_vars(True),
+        ).pack(side=tk.LEFT)
+        ttk.Button(
+            button_bar,
+            text="Hide All",
+            command=lambda: self.set_column_chooser_vars(False),
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(
+            button_bar,
+            text="Reset",
+            command=self.reset_column_chooser_vars,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(
+            button_bar,
+            text="Apply",
+            command=self.apply_column_chooser,
+        ).pack(side=tk.LEFT, padx=(16, 0))
+        ttk.Button(
+            button_bar,
+            text="Close",
+            command=self.close_column_chooser,
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
+        dialog.update_idletasks()
+        x = self.winfo_rootx() + max((self.winfo_width() - dialog.winfo_width()) // 2, 0)
+        y = self.winfo_rooty() + 80
+        dialog.geometry(f"+{x}+{y}")
+        dialog.focus_set()
+
+    def set_column_chooser_vars(self, visible):
+        for var in self.column_chooser_vars.values():
+            var.set(visible)
+
+    def reset_column_chooser_vars(self):
+        default_columns = {column_id for column_id, *_rest in self.tree_column_specs}
+
+        for column_id, var in self.column_chooser_vars.items():
+            var.set(column_id in default_columns)
+
+    def apply_column_chooser(self):
+        selected_columns = [
+            column_id
+            for column_id, *_rest in self.tree_column_specs
+            if self.column_chooser_vars.get(column_id)
+            and self.column_chooser_vars[column_id].get()
+        ]
+        self.visible_tree_columns = selected_columns
+        self.apply_visible_tree_columns()
+        self.status_var.set(f"Showing {len(selected_columns)} tree data columns.")
+
+    def close_column_chooser(self):
+        if self.column_dialog and self.column_dialog.winfo_exists():
+            self.column_dialog.destroy()
+
+        self.column_dialog = None
+        self.column_chooser_vars = {}
 
     def open_csv_dialog(self):
         path = filedialog.askopenfilename(
