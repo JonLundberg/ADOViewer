@@ -25,7 +25,12 @@ import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
-from adoviewer.csv_io import CsvExportError, read_csv_file, write_azure_tree_csv
+from adoviewer.csv_io import (
+    CsvExportError,
+    read_csv_file,
+    write_azure_tree_csv,
+    write_round_trip_csv,
+)
 from adoviewer.project_io import load_project_file, save_project_file
 from adoviewer.tree_model import WorkItemModel
 
@@ -88,6 +93,7 @@ class AdoWorkItemsViewer(tk.Tk):
         file_menu.add_command(label="Save Project As...", command=self.save_project_as)
         file_menu.add_separator()
         file_menu.add_command(label="Export Azure Tree CSV...", command=self.export_azure_tree_csv_dialog)
+        file_menu.add_command(label="Export Round-Trip CSV...", command=self.export_round_trip_csv_dialog)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.destroy)
 
@@ -147,7 +153,8 @@ class AdoWorkItemsViewer(tk.Tk):
         ttk.Button(top_bar, text="Open Project...", command=self.open_project_dialog).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top_bar, text="Save", command=self.save_project).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Button(top_bar, text="Save As", command=self.save_project_as).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Export CSV", command=self.export_azure_tree_csv_dialog).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(top_bar, text="Azure CSV", command=self.export_azure_tree_csv_dialog).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(top_bar, text="Round-Trip CSV", command=self.export_round_trip_csv_dialog).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top_bar, text="Add Root", command=self.add_root_item).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Button(top_bar, text="Add Child", command=self.add_child_item).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top_bar, text="Add Sibling", command=self.add_sibling_item).pack(side=tk.LEFT, padx=(4, 0))
@@ -554,7 +561,7 @@ class AdoWorkItemsViewer(tk.Tk):
         path = filedialog.asksaveasfilename(
             title="Export Azure Tree CSV",
             defaultextension=".csv",
-            initialfile=self.default_export_filename(),
+            initialfile=self.default_export_filename("azure-tree"),
             filetypes=[
                 ("CSV files", "*.csv"),
                 ("All files", "*.*"),
@@ -578,11 +585,61 @@ class AdoWorkItemsViewer(tk.Tk):
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
 
-    def default_export_filename(self):
+    def export_round_trip_csv_dialog(self):
+        if not self.model:
+            messagebox.showinfo("Export Round-Trip CSV", "Open a CSV or add a root work item first.")
+            return
+
+        errors = [
+            message
+            for message in self.model.validate()
+            if message.severity == "error"
+        ]
+
+        if errors:
+            preview = "\n".join(f"- {message.message}" for message in errors[:10])
+            if len(errors) > 10:
+                preview += f"\n- ... {len(errors) - 10} more"
+            messagebox.showerror(
+                "Export Round-Trip CSV",
+                f"Fix validation errors before exporting.\n\n{preview}",
+            )
+            self.populate_tree(self.filter_var.get())
+            self.update_status()
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Export Round-Trip CSV",
+            defaultextension=".csv",
+            initialfile=self.default_export_filename("round-trip"),
+            filetypes=[
+                ("CSV files", "*.csv"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if not path:
+            return
+
+        try:
+            fieldnames, rows = write_round_trip_csv(self.model, path)
+            self.status_var.set(
+                f"Exported {len(rows)} work items and {len(fieldnames)} columns to {os.path.basename(path)}."
+            )
+
+        except CsvExportError as ex:
+            messagebox.showerror("Export Round-Trip CSV", str(ex))
+            self.populate_tree(self.filter_var.get())
+            self.update_status()
+
+        except Exception as ex:
+            messagebox.showerror("Error", str(ex))
+
+    def default_export_filename(self, suffix):
         path = self.project_path or self.current_path
 
         if not path:
-            return "work-items-azure-tree.csv"
+            return f"work-items-{suffix}.csv"
 
         base_name = os.path.basename(path)
 
@@ -591,7 +648,7 @@ class AdoWorkItemsViewer(tk.Tk):
         else:
             base_name = os.path.splitext(base_name)[0]
 
-        return f"{base_name}-azure-tree.csv"
+        return f"{base_name}-{suffix}.csv"
 
 
     def clear_tree(self):

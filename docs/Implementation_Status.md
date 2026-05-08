@@ -52,6 +52,10 @@ Milestone 4 has started:
 - Deleted work items are omitted from Azure tree CSV export.
 - The File menu and toolbar can export the current model to an Azure tree CSV after validation passes.
 - Tests cover all-new hierarchy export, mixed existing/new IDs, deleted item omission, validation blocking, and UTF-8 CSV writing.
+- Round-trip CSV export is implemented for preserving the current source/project field order and custom fields.
+- Round-trip exports regenerate `Title N` columns from the local tree when the source uses title-level hierarchy, including added depth columns for deeper local trees.
+- The File menu and toolbar can export round-trip CSV files after validation passes.
+- Round-trip tests cover field order, custom fields, title-level hierarchy regeneration, and re-importing an exported hierarchy with commas, quotes, and newlines.
 
 ## Next Planned Work
 
@@ -59,7 +63,6 @@ Next position in the plan: **Milestone 4 - CSV Export**.
 
 Expected next work:
 
-- Export round-trip CSV.
 - Split or block web-import CSVs over 1,000 Work Items.
 - Exclude ADOViewer metadata and preserve custom fields.
 - Add export preview.

@@ -9,8 +9,10 @@ import pytest
 from adoviewer.csv_io import (
     CsvExportError,
     build_azure_tree_csv,
+    build_round_trip_csv,
     read_csv_file,
     write_azure_tree_csv,
+    write_round_trip_csv,
 )
 from adoviewer.tree_model import WorkItemModel
 
@@ -144,3 +146,92 @@ def test_write_azure_tree_csv_outputs_readable_utf8_sig_csv(tmp_path):
             "State": "New",
         },
     ]
+
+
+def test_round_trip_export_preserves_parent_id_field_order_and_custom_fields():
+    model = load_model("parent_id_tree.csv")
+    cart = model.root.children[0].children[0]
+    new_child = model.add_child(
+        cart.item.local_id,
+        "Offline task",
+        "Task",
+        fields={"Tags": "Migration; Offline"},
+    )
+    model.edit_field(new_child.item.local_id, "Custom Field", "Preserved")
+
+    fieldnames, rows = build_round_trip_csv(model)
+
+    assert fieldnames == [
+        "ID",
+        "Work Item Type",
+        "Title",
+        "State",
+        "Parent ID",
+        "Tags",
+        "Custom Field",
+    ]
+    assert [row["Title"] for row in rows] == [
+        "Checkout",
+        "Cart",
+        "Add item",
+        "Offline task",
+        "Payment",
+    ]
+    assert rows[3]["ID"] == ""
+    assert rows[3]["Parent ID"] == "11"
+    assert rows[3]["Tags"] == "Migration; Offline"
+    assert rows[3]["Custom Field"] == "Preserved"
+
+
+def test_round_trip_export_regenerates_title_levels_from_local_tree():
+    model = load_model("title_levels_tree.csv")
+    platform = model.root.children[0]
+    api = platform.children[0]
+    ui = platform.children[1]
+    model.indent(ui.item.local_id)
+    story = api.children[0]
+    model.add_child(story.item.local_id, "Export preview", "Task", fields={"State": "New"})
+
+    fieldnames, rows = build_round_trip_csv(model)
+
+    assert fieldnames == [
+        "ID",
+        "Work Item Type",
+        "Title 1",
+        "Title 2",
+        "Title 3",
+        "Title 4",
+        "State",
+    ]
+    assert "Title" not in fieldnames
+    assert [row["Title 1"] for row in rows] == ["Platform", "", "", "", ""]
+    assert [row["Title 2"] for row in rows] == ["", "API", "", "", ""]
+    assert [row["Title 3"] for row in rows] == ["", "", "List work items", "", "UI"]
+    assert [row["Title 4"] for row in rows] == ["", "", "", "Export preview", ""]
+    assert all(
+        sum(1 for key, value in row.items() if key.startswith("Title ") and value) == 1
+        for row in rows
+    )
+
+
+def test_round_trip_export_round_trips_title_level_hierarchy(tmp_path):
+    model = load_model("title_levels_tree.csv")
+    api = model.root.children[0].children[0]
+    model.add_child(api.item.local_id, "Export commas, quotes, and\nnewlines", "Task")
+    output_path = tmp_path / "round-trip.csv"
+
+    write_round_trip_csv(model, str(output_path))
+    fieldnames, rows = read_csv_file(str(output_path))
+    loaded = WorkItemModel(fieldnames, rows, local_id_factory=local_ids())
+
+    platform = loaded.root.children[0]
+    loaded_api = platform.children[0]
+
+    assert [item.title for item in loaded.flatten()] == [
+        "Platform",
+        "API",
+        "List work items",
+        "Export commas, quotes, and\nnewlines",
+        "UI",
+    ]
+    assert loaded_api.children[1].item.title == "Export commas, quotes, and\nnewlines"

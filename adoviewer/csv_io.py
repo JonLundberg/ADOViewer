@@ -347,6 +347,96 @@ def write_azure_tree_csv(model: Any, path: str) -> tuple[list[str], list[dict[st
     return fieldnames, rows
 
 
+def build_round_trip_csv(model: Any) -> tuple[list[str], list[dict[str, str]]]:
+    """
+    Build a CSV that preserves the current project/source columns where possible.
+
+    Round-trip export keeps field order and unknown/custom fields intact. If the
+    source uses Title N hierarchy columns, those columns are regenerated from the
+    current local tree so reparenting and new unsaved hierarchy are represented.
+    """
+    messages = model.validate()
+    errors = [message for message in messages if message.severity == "error"]
+
+    if errors:
+        raise CsvExportError("Fix validation errors before exporting.")
+
+    items_with_depth = iter_model_items_with_depth(model)
+    fieldnames = list(model.fieldnames)
+
+    if model.title_level_columns:
+        max_depth = max((depth for _item, depth in items_with_depth), default=1)
+        fieldnames = round_trip_title_level_fieldnames(model, fieldnames, max_depth)
+
+    rows = []
+
+    for item, depth in items_with_depth:
+        row = {
+            field_name: str(item.fields.get(field_name, ""))
+            for field_name in fieldnames
+        }
+
+        if model.id_col and model.id_col in row and item.state == "new":
+            row[model.id_col] = ""
+
+        if model.type_col and model.type_col in row:
+            row[model.type_col] = item.work_item_type
+
+        if model.title_level_columns:
+            for field_name in fieldnames:
+                if looks_like_title_level_column(field_name):
+                    row[field_name] = ""
+            row[f"Title {depth}"] = item.title
+        elif model.title_col and model.title_col in row:
+            row[model.title_col] = item.title
+
+        rows.append(row)
+
+    return fieldnames, rows
+
+
+def round_trip_title_level_fieldnames(
+    model: Any,
+    fieldnames: list[str],
+    max_depth: int,
+) -> list[str]:
+    title_level_names = {
+        column
+        for _level, column in model.title_level_columns
+    }
+    existing_title_levels = get_title_level_columns(fieldnames)
+    fieldnames = [
+        field_name
+        for field_name in fieldnames
+        if field_name != model.title_col or field_name in title_level_names
+    ]
+
+    if existing_title_levels:
+        insert_at = max(fieldnames.index(column) for _level, column in existing_title_levels) + 1
+    else:
+        insert_at = len(fieldnames)
+
+    for level in range(1, max_depth + 1):
+        column = f"Title {level}"
+        if column in fieldnames:
+            continue
+        fieldnames.insert(insert_at, column)
+        insert_at += 1
+
+    return fieldnames
+
+
+def write_round_trip_csv(model: Any, path: str) -> tuple[list[str], list[dict[str, str]]]:
+    fieldnames, rows = build_round_trip_csv(model)
+
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, dialect=csv.excel)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return fieldnames, rows
+
+
 def _remote_id_text(item: Any, model: Any) -> str:
     if item.remote_id is not None:
         return str(item.remote_id)
