@@ -91,6 +91,62 @@ def test_import_records_warnings_for_missing_parent_ids():
     ]
 
 
+def test_import_records_duplicate_ids_and_invalid_ids():
+    model = WorkItemModel(
+        ["ID", "Work Item Type", "Title", "State"],
+        [
+            {"ID": "100", "Work Item Type": "Task", "Title": "First", "State": "New"},
+            {"ID": "100", "Work Item Type": "Task", "Title": "Second", "State": "New"},
+            {"ID": "not-an-id", "Work Item Type": "Task", "Title": "Third", "State": "New"},
+        ],
+        local_id_factory=local_ids(),
+    )
+
+    messages = [(msg.severity, msg.message, msg.field) for msg in model.validation_messages]
+
+    assert ("error", "Duplicate work item ID 100.", "ID") in messages
+    assert ("error", "Work item ID must be an integer.", "ID") in messages
+
+
+def test_validation_recomputes_after_fixing_duplicate_ids():
+    model = WorkItemModel(
+        ["ID", "Work Item Type", "Title"],
+        [
+            {"ID": "100", "Work Item Type": "Task", "Title": "First"},
+            {"ID": "100", "Work Item Type": "Task", "Title": "Second"},
+        ],
+        local_id_factory=local_ids(),
+    )
+    second = model.all_nodes[1]
+
+    model.edit_field(second.item.local_id, "ID", "101")
+
+    messages = [msg.message for msg in model.validate()]
+
+    assert "Duplicate work item ID 100." not in messages
+
+
+def test_import_records_parent_id_cycles_and_keeps_items_visible():
+    model = WorkItemModel(
+        ["ID", "Work Item Type", "Title", "Parent ID"],
+        [
+            {"ID": "1", "Work Item Type": "Epic", "Title": "One", "Parent ID": "2"},
+            {"ID": "2", "Work Item Type": "Feature", "Title": "Two", "Parent ID": "1"},
+        ],
+        local_id_factory=local_ids(),
+    )
+
+    messages = [(msg.severity, msg.message, msg.field) for msg in model.validation_messages]
+
+    assert any(
+        severity == "error"
+        and message.endswith("would create a parent-child cycle.")
+        and field == "Parent ID"
+        for severity, message, field in messages
+    )
+    assert [item.title for item in model.flatten()] == ["Two", "One"]
+
+
 def test_import_records_title_level_shape_problems():
     model = load_model("bad_title_levels.csv")
 

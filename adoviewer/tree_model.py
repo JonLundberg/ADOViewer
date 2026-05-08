@@ -63,8 +63,12 @@ class WorkItemModel:
         self.all_nodes: list[WorkItemNode] = []
         self.nodes_by_local_id: dict[str, WorkItemNode] = {}
         self.validation_messages: list[ValidationMessage] = []
+        self._initializing = True
 
         self.build_tree()
+        self._snapshot_original_hierarchy()
+        self._initializing = False
+        self.validate()
 
     def row_id(self, row: dict[str, str]) -> str:
         if self.id_col:
@@ -180,7 +184,20 @@ class WorkItemModel:
                 self.root.add_child(node)
             elif parent_id and parent_id in by_remote_id:
                 parent = by_remote_id[parent_id]
-                self._attach_existing_node(parent, node)
+                if self._is_descendant(parent, node):
+                    label = node_id
+                    if not label and node.item:
+                        label = node.item.local_id
+                    self._add_validation(
+                        "error",
+                        f"Work item {label} would create a parent-child cycle.",
+                        node,
+                        row_index=node.item.source_row_index if node.item else None,
+                        field=self.parent_col,
+                    )
+                    self.root.add_child(node)
+                else:
+                    self._attach_existing_node(parent, node)
             else:
                 if parent_id:
                     self._add_validation(
@@ -328,7 +345,8 @@ class WorkItemModel:
         self._refresh_dirty_state(item)
 
     def edit_title(self, local_id: str, title: str) -> None:
-        title_col = self._ensure_title_column()
+        node = self._require_real_node(local_id)
+        title_col = self._title_field_for_node(node)
         self.edit_field(local_id, title_col, title)
 
     def soft_delete(self, local_id: str) -> None:
@@ -369,6 +387,7 @@ class WorkItemModel:
             assert node.item is not None
             node.item.parent_local_id = None
             self._update_parent_field(node)
+            self._refresh_dirty_state(node.item)
         else:
             self._attach_existing_node(new_parent, node, index)
 
@@ -377,6 +396,45 @@ class WorkItemModel:
 
     def move_down(self, local_id: str) -> bool:
         return self._move_sibling(local_id, 1)
+
+    def indent(self, local_id: str) -> bool:
+        """Move an item under its previous real sibling."""
+        node = self._require_real_node(local_id)
+
+        if not node.parent:
+            return False
+
+        siblings = node.parent.children
+        index = siblings.index(node)
+
+        if index == 0:
+            return False
+
+        new_parent = siblings[index - 1]
+
+        if not new_parent.item:
+            return False
+
+        self.reparent(local_id, new_parent.item.local_id)
+        return True
+
+    def outdent(self, local_id: str) -> bool:
+        """Move an item to become the next sibling of its current parent."""
+        node = self._require_real_node(local_id)
+        parent = node.parent
+
+        if not parent or parent is self.root:
+            return False
+
+        grandparent = parent.parent
+
+        if not grandparent:
+            return False
+
+        index = grandparent.children.index(parent) + 1
+        new_parent_local_id = grandparent.item.local_id if grandparent.item else None
+        self.reparent(local_id, new_parent_local_id, index)
+        return True
 
     def flatten(self, include_deleted: bool = True) -> list[WorkItem]:
         items: list[WorkItem] = []
@@ -411,11 +469,26 @@ class WorkItemModel:
 
         return counts
 
+    def validate(self) -> list[ValidationMessage]:
+        """Run model-level validation while preserving import-time findings."""
+        self._reset_validation_messages()
+        self._validate_title_level_shape()
+        self._validate_parent_id_fields()
+        self._validate_required_fields()
+        self._validate_remote_ids()
+        self._validate_parent_link_consistency()
+        self._validate_cycles()
+        self._validate_deleted_parents()
+        return list(self.validation_messages)
+
     def _node_from_row(self, index: int, row: dict[str, str]) -> WorkItemNode:
         local_id = self.local_id_factory()
+        item_id = self.row_id(row)
+        remote_id = _parse_int(item_id)
+        state = "new" if self.id_col and not item_id else "unchanged"
         item = WorkItem(
             local_id=local_id,
-            remote_id=_parse_int(self.row_id(row)),
+            remote_id=remote_id,
             rev=_parse_int(row.get(self.rev_col)) if self.rev_col else None,
             work_item_type=self.row_type(row),
             title=self.row_title(row),
@@ -423,7 +496,7 @@ class WorkItemModel:
             original_fields=dict(row),
             parent_local_id=None,
             source_row_index=index,
-            state="unchanged",
+            state=state,
         )
         node = WorkItemNode(local_id, item=item)
         self.all_nodes.append(node)
@@ -490,6 +563,12 @@ class WorkItemModel:
 
         return self.type_col
 
+    def _title_field_for_node(self, node: WorkItemNode) -> str:
+        for _level, col, _value in get_populated_title_levels(node.row, self.title_level_columns):
+            return col
+
+        return self._ensure_title_column()
+
     def _attach_existing_node(
         self,
         parent: WorkItemNode,
@@ -506,6 +585,7 @@ class WorkItemModel:
                 else:
                     parent.item.children.insert(max(index, 0), child.item.local_id)
             self._update_parent_field(child)
+            self._refresh_dirty_state(child.item)
 
     def _detach_node(self, node: WorkItemNode) -> None:
         old_parent = node.parent
@@ -536,7 +616,12 @@ class WorkItemModel:
         if item.state in {"new", "deleted"}:
             return
 
-        if item.fields != item.original_fields:
+        hierarchy_changed = (
+            not self._initializing
+            and item.parent_local_id != item.original_parent_local_id
+        )
+
+        if item.fields != item.original_fields or hierarchy_changed:
             item.state = "modified"
         else:
             item.state = "unchanged"
@@ -580,6 +665,309 @@ class WorkItemModel:
 
         return False
 
+    def _snapshot_original_hierarchy(self) -> None:
+        for node in self.all_nodes:
+            if node.item:
+                node.item.original_parent_local_id = node.item.parent_local_id
+
+    def _reset_validation_messages(self) -> None:
+        self.validation_messages = []
+
+        for node in self.all_nodes:
+            if node.item:
+                node.item.validation.clear()
+
+    def _record_validation(self, validation: ValidationMessage) -> None:
+        self.validation_messages.append(validation)
+
+        if validation.local_id:
+            node = self.nodes_by_local_id.get(validation.local_id)
+            if node and node.item:
+                node.item.validation.append(validation)
+
+    def _source_sort_key(self, node: WorkItemNode) -> int:
+        if node.item and node.item.source_row_index is not None:
+            return node.item.source_row_index
+
+        return 10**12
+
+    def _validate_title_level_shape(self) -> None:
+        if not self.title_level_columns:
+            return
+
+        stack_by_level: dict[int, WorkItemNode] = {}
+
+        for node in sorted(self.all_nodes, key=self._source_sort_key):
+            item = node.item
+
+            if not item or item.source_row_index is None:
+                continue
+
+            populated = get_populated_title_levels(item.fields, self.title_level_columns)
+
+            if len(populated) > 1:
+                self._add_validation(
+                    "error",
+                    "Only one Title N column should be populated per row.",
+                    node,
+                    row_index=item.source_row_index,
+                )
+
+            level = populated[0][0] if populated else None
+
+            if level is None:
+                continue
+
+            if level > 1 and (level - 1) not in stack_by_level:
+                self._add_validation(
+                    "warning",
+                    f"Title level {level} has no previous level {level - 1} parent.",
+                    node,
+                    row_index=item.source_row_index,
+                )
+
+            stack_by_level[level] = node
+
+            for existing_level in list(stack_by_level.keys()):
+                if existing_level > level:
+                    del stack_by_level[existing_level]
+
+    def _validate_parent_id_fields(self) -> None:
+        if not self.parent_col or not self.id_col:
+            return
+
+        by_remote_id: dict[str, WorkItemNode] = {}
+
+        for node in self.all_nodes:
+            item_id = self.row_id(node.row)
+
+            if item_id and item_id not in by_remote_id:
+                by_remote_id[item_id] = node
+
+        for node in self.all_nodes:
+            item = node.item
+
+            if not item:
+                continue
+
+            parent_id = str(item.fields.get(self.parent_col, "")).strip()
+            node_id = self.row_id(item.fields)
+
+            if not parent_id:
+                continue
+
+            if parent_id == node_id:
+                self._add_validation(
+                    "error",
+                    f"Work item {node_id} cannot be its own parent.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=self.parent_col,
+                )
+            elif parent_id not in by_remote_id:
+                self._add_validation(
+                    "warning",
+                    f"Parent ID {parent_id} was not found in this file.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=self.parent_col,
+                )
+
+        self._validate_parent_id_cycles(by_remote_id)
+
+    def _validate_parent_id_cycles(self, by_remote_id: dict[str, WorkItemNode]) -> None:
+        reported_cycles: set[frozenset[str]] = set()
+
+        for start in self.all_nodes:
+            current = start
+            path: list[str] = []
+            path_by_id: dict[str, WorkItemNode] = {}
+
+            while current.item:
+                current_id = self.row_id(current.item.fields)
+
+                if not current_id:
+                    break
+
+                if current_id in path_by_id:
+                    cycle_ids = frozenset(path[path.index(current_id):])
+
+                    if cycle_ids not in reported_cycles:
+                        reported_cycles.add(cycle_ids)
+                        cycle_node = path_by_id[current_id]
+                        self._add_validation(
+                            "error",
+                            f"Work item {current_id} would create a parent-child cycle.",
+                            cycle_node,
+                            row_index=cycle_node.item.source_row_index if cycle_node.item else None,
+                            field=self.parent_col,
+                        )
+                    break
+
+                path.append(current_id)
+                path_by_id[current_id] = current
+                parent_id = str(current.item.fields.get(self.parent_col, "")).strip()
+
+                if not parent_id or parent_id not in by_remote_id:
+                    break
+
+                current = by_remote_id[parent_id]
+
+    def _validate_required_fields(self) -> None:
+        for node in self.all_nodes:
+            item = node.item
+
+            if not item or item.state == "deleted":
+                continue
+
+            if not str(item.title).strip():
+                title_field = self.title_col
+                populated = get_populated_title_levels(item.fields, self.title_level_columns)
+                if populated:
+                    title_field = populated[0][1]
+                self._add_validation(
+                    "error",
+                    "Work item title is required.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=title_field,
+                )
+
+            if not str(item.work_item_type).strip():
+                self._add_validation(
+                    "error",
+                    "Work Item Type is required.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=self.type_col,
+                )
+
+    def _validate_remote_ids(self) -> None:
+        if not self.id_col:
+            return
+
+        seen: dict[int, WorkItemNode] = {}
+
+        for node in self.all_nodes:
+            item = node.item
+
+            if not item:
+                continue
+
+            raw_id = str(item.fields.get(self.id_col, "")).strip()
+            parsed_id = _parse_int(raw_id)
+
+            if raw_id and parsed_id is None:
+                self._add_validation(
+                    "error",
+                    "Work item ID must be an integer.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=self.id_col,
+                )
+                continue
+
+            if item.state == "new" and parsed_id is not None:
+                self._add_validation(
+                    "error",
+                    "New work items must not have a remote ID.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=self.id_col,
+                )
+
+            if parsed_id is None:
+                continue
+
+            if parsed_id in seen:
+                self._add_validation(
+                    "error",
+                    f"Duplicate work item ID {parsed_id}.",
+                    node,
+                    row_index=item.source_row_index,
+                    field=self.id_col,
+                )
+            else:
+                seen[parsed_id] = node
+
+    def _validate_parent_link_consistency(self) -> None:
+        for node in self.all_nodes:
+            item = node.item
+
+            if not item:
+                continue
+
+            expected_parent = node.parent.item.local_id if node.parent and node.parent.item else None
+
+            if item.parent_local_id != expected_parent:
+                self._add_validation(
+                    "error",
+                    "Parent local ID does not match the tree parent.",
+                    node,
+                    row_index=item.source_row_index,
+                )
+
+            if node.parent and node.parent.item and item.local_id not in node.parent.item.children:
+                self._add_validation(
+                    "error",
+                    "Parent child list does not include this work item.",
+                    node,
+                    row_index=item.source_row_index,
+                )
+
+    def _validate_cycles(self) -> None:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+        reported: set[str] = set()
+
+        def visit(node: WorkItemNode) -> None:
+            if not node.item:
+                return
+
+            local_id = node.item.local_id
+
+            if local_id in visiting:
+                if local_id not in reported:
+                    reported.add(local_id)
+                    self._add_validation(
+                        "error",
+                        "Work item hierarchy contains a cycle.",
+                        node,
+                        row_index=node.item.source_row_index,
+                    )
+                return
+
+            if local_id in visited:
+                return
+
+            visiting.add(local_id)
+
+            for child in node.children:
+                visit(child)
+
+            visiting.remove(local_id)
+            visited.add(local_id)
+
+        for node in self.all_nodes:
+            visit(node)
+
+    def _validate_deleted_parents(self) -> None:
+        for node in self.all_nodes:
+            item = node.item
+
+            if not item or item.state != "deleted":
+                continue
+
+            for child in node.children:
+                if child.item and child.item.state != "deleted":
+                    self._add_validation(
+                        "error",
+                        "Deleted work item has non-deleted children.",
+                        node,
+                        row_index=item.source_row_index,
+                    )
+                    break
+
     def _add_validation(
         self,
         severity: str,
@@ -596,7 +984,5 @@ class WorkItemModel:
             row_index=row_index,
             field=field,
         )
-        self.validation_messages.append(validation)
 
-        if node and node.item:
-            node.item.validation.append(validation)
+        self._record_validation(validation)

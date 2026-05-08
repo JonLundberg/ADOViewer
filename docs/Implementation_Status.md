@@ -1,0 +1,35 @@
+# ADOViewer Implementation Status
+
+Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan.md)
+
+## Current Checkpoint
+
+Current position in the plan: **Milestone 2 - Canonical Editable Model**.
+
+Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
+
+Milestone 2 is implemented in the model layer:
+
+- Canonical work item structures live in `adoviewer/models.py`.
+- CSV imports are converted into `WorkItemModel` nodes in `adoviewer/tree_model.py`.
+- Hierarchy uses `local_id` and `parent_local_id`; it does not require Azure remote IDs.
+- The model supports add root, add child, add sibling, edit field/title, soft delete, restore, reparent, move up/down, indent, and outdent.
+- Dirty state tracks new, modified, deleted, and unchanged items, including hierarchy changes.
+- Validators cover required title/type, duplicate or invalid remote IDs, missing parents, parent cycles, parent link consistency, and deleted parents with active children.
+- Focused tests cover import behavior and model operations under `tests/`.
+
+Milestone 2 intentionally defers undo/redo. The implementation plan allows clear dirty tracking first if command objects are not worth the complexity yet.
+
+## Next Planned Work
+
+Next position in the plan: **Milestone 3 - Editor UI**.
+
+Expected next work:
+
+- Add toolbar and menu commands for model operations.
+- Replace the read-only details pane with an editor for common and raw fields.
+- Show dirty and validation markers in the tree.
+- Add context menu actions.
+- Add project save/reopen support.
+- Preserve selection and expansion across edits and filters.
+- Add a column chooser.

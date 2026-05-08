@@ -29,6 +29,7 @@ class WorkItem:
     fields: dict[str, str]
     original_fields: dict[str, str]
     parent_local_id: str | None
+    original_parent_local_id: str | None = None
     children: list[str] = field(default_factory=list)
     source_row_index: int | None = None
     state: WorkItemState = "unchanged"
