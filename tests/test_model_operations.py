@@ -77,6 +77,25 @@ def test_edit_existing_field_marks_item_modified_and_can_return_unchanged():
     assert cart.item.state == "unchanged"
 
 
+def test_editing_new_standard_field_refreshes_detected_columns():
+    model = WorkItemModel(
+        ["ID", "Title"],
+        [
+            {"ID": "1", "Title": "Minimal item"},
+        ],
+        local_id_factory=local_ids(),
+    )
+    item = model.all_nodes[0].item
+
+    model.edit_field(item.local_id, "Work Item Type", "Task")
+    model.edit_field(item.local_id, "State", "New")
+
+    assert model.type_col == "Work Item Type"
+    assert model.state_col == "State"
+    assert item.work_item_type == "Task"
+    assert model.row_state(item.fields) == "New"
+
+
 def test_edit_title_updates_existing_title_level_column():
     model = load_model("title_levels_tree.csv")
     api = model.root.children[0].children[0]

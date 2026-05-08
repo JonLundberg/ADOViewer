@@ -44,6 +44,9 @@ class AdoWorkItemsViewer(tk.Tk):
         self.model = None
         self.current_path = None
         self.tree_item_to_node = {}
+        self.details_local_id = None
+        self.common_field_vars = []
+        self.raw_field_items = {}
 
         self.create_widgets()
         self.create_menu()
@@ -212,20 +215,78 @@ class AdoWorkItemsViewer(tk.Tk):
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
 
-        details_label = ttk.Label(details_frame, text="Details")
+        self.details_title_var = tk.StringVar(value="Details")
+        details_label = ttk.Label(details_frame, textvariable=self.details_title_var)
         details_label.pack(anchor="w")
 
-        self.details_text = tk.Text(details_frame, height=10, wrap=tk.NONE)
-        self.details_text.pack(fill=tk.BOTH, expand=True)
+        self.details_notebook = ttk.Notebook(details_frame)
+        self.details_notebook.pack(fill=tk.BOTH, expand=True)
 
-        details_y_scroll = ttk.Scrollbar(
-            details_frame,
-            orient=tk.VERTICAL,
-            command=self.details_text.yview,
+        common_tab = ttk.Frame(self.details_notebook)
+        raw_tab = ttk.Frame(self.details_notebook)
+        validation_tab = ttk.Frame(self.details_notebook)
+
+        self.details_notebook.add(common_tab, text="Common Fields")
+        self.details_notebook.add(raw_tab, text="Raw Fields")
+        self.details_notebook.add(validation_tab, text="Validation")
+
+        self.common_form_frame = ttk.Frame(common_tab)
+        self.common_form_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        common_button_bar = ttk.Frame(common_tab)
+        common_button_bar.pack(fill=tk.X, padx=8, pady=(0, 8))
+        ttk.Button(
+            common_button_bar,
+            text="Apply Common Fields",
+            command=self.apply_common_field_edits,
+        ).pack(side=tk.LEFT)
+
+        raw_split = ttk.PanedWindow(raw_tab, orient=tk.HORIZONTAL)
+        raw_split.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        raw_list_frame = ttk.Frame(raw_split)
+        raw_editor_frame = ttk.Frame(raw_split)
+        raw_split.add(raw_list_frame, weight=2)
+        raw_split.add(raw_editor_frame, weight=3)
+
+        self.raw_fields_tree = ttk.Treeview(
+            raw_list_frame,
+            columns=("field", "value"),
+            show="headings",
+            selectmode="browse",
+            height=8,
         )
-        details_y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.raw_fields_tree.heading("field", text="Field")
+        self.raw_fields_tree.heading("value", text="Value")
+        self.raw_fields_tree.column("field", width=220, minwidth=140, stretch=False)
+        self.raw_fields_tree.column("value", width=420, minwidth=180, stretch=True)
+        self.raw_fields_tree.grid(row=0, column=0, sticky="nsew")
+        self.raw_fields_tree.bind("<<TreeviewSelect>>", self.on_raw_field_select)
 
-        self.details_text.configure(yscrollcommand=details_y_scroll.set)
+        raw_y_scroll = ttk.Scrollbar(
+            raw_list_frame,
+            orient=tk.VERTICAL,
+            command=self.raw_fields_tree.yview,
+        )
+        raw_y_scroll.grid(row=0, column=1, sticky="ns")
+        self.raw_fields_tree.configure(yscrollcommand=raw_y_scroll.set)
+        raw_list_frame.rowconfigure(0, weight=1)
+        raw_list_frame.columnconfigure(0, weight=1)
+
+        self.raw_field_name_var = tk.StringVar(value="Select a field")
+        ttk.Label(raw_editor_frame, textvariable=self.raw_field_name_var).pack(anchor="w")
+        self.raw_value_text = tk.Text(raw_editor_frame, height=6, wrap=tk.WORD)
+        self.raw_value_text.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
+        ttk.Button(
+            raw_editor_frame,
+            text="Apply Raw Field",
+            command=self.apply_raw_field_edit,
+        ).pack(anchor="w")
+
+        self.validation_text = tk.Text(validation_tab, height=8, wrap=tk.WORD)
+        self.validation_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.validation_text.configure(state=tk.DISABLED)
+        self.clear_details()
 
     def open_csv_dialog(self):
         path = filedialog.askopenfilename(
@@ -272,7 +333,11 @@ class AdoWorkItemsViewer(tk.Tk):
             self.insert_node_if_matching("", child, filter_text)
 
         self.expand_all()
-        self.select_local_id(select_local_id)
+        if select_local_id:
+            if not self.select_local_id(select_local_id):
+                self.clear_details()
+        else:
+            self.clear_details()
 
     def node_matches_filter(self, node, filter_text):
         if not filter_text:
@@ -379,6 +444,7 @@ class AdoWorkItemsViewer(tk.Tk):
         selection = self.tree.selection()
 
         if not selection:
+            self.clear_details()
             return
 
         item = selection[0]
@@ -387,48 +453,221 @@ class AdoWorkItemsViewer(tk.Tk):
         self.show_details(node)
 
     def show_details(self, node):
-        self.details_text.delete("1.0", tk.END)
-
         if not node:
+            self.clear_details()
             return
 
         if node.synthetic:
-            self.details_text.insert(tk.END, "Synthetic grouping node\n")
-            self.details_text.insert(tk.END, f"Title: {node.row.get('Synthetic Title', '')}\n")
+            title = node.row.get("Synthetic Title", "Group")
+            self.clear_details(f"Synthetic grouping node: {title}")
+            return
+
+        self.details_local_id = node.item.local_id
+        self.details_title_var.set(f"Details - {node.item.title or '(untitled)'}")
+        self.populate_common_fields(node)
+        self.populate_raw_fields(node)
+        self.populate_validation_details(node)
+
+    def clear_details(self, message="Select a work item to edit its fields."):
+        self.details_local_id = None
+        self.details_title_var.set("Details")
+        self.common_field_vars = []
+        self.raw_field_items = {}
+
+        for child in self.common_form_frame.winfo_children():
+            child.destroy()
+
+        ttk.Label(self.common_form_frame, text=message).grid(row=0, column=0, sticky="w")
+
+        for item in self.raw_fields_tree.get_children():
+            self.raw_fields_tree.delete(item)
+
+        self.raw_field_name_var.set("Select a field")
+        self.raw_value_text.delete("1.0", tk.END)
+        self.set_validation_text(message)
+
+    def common_field_definitions(self, node):
+        item = node.item
+        assert item is not None
+
+        definitions = [
+            ("Title", "__title__", item.title),
+            ("Work Item Type", self.model.type_col or "Work Item Type", item.work_item_type),
+            ("State", self.model.state_col or "State", self.model.row_state(item.fields)),
+            ("Assigned To", self.model.assigned_to_col or "Assigned To", self.model.row_assigned_to(item.fields)),
+            ("Area Path", self.model.area_col or "Area Path", self.model.row_area(item.fields)),
+            ("Iteration Path", self.model.iteration_col or "Iteration Path", self.model.row_iteration(item.fields)),
+            ("Tags", self.model.tags_col or "Tags", self.model.row_tags(item.fields)),
+        ]
+
+        optional_columns = [
+            ("Effort / Points / Estimate", self.model.effort_col, self.model.row_effort(item.fields)),
+            ("Remaining Work", self.model.remaining_col, self.model.row_remaining(item.fields)),
+            ("Completed Work", self.model.completed_col, self.model.row_completed(item.fields)),
+        ]
+
+        for label, field_name, value in optional_columns:
+            if field_name:
+                definitions.append((label, field_name, value))
+
+        return definitions
+
+    def populate_common_fields(self, node):
+        for child in self.common_form_frame.winfo_children():
+            child.destroy()
+
+        self.common_field_vars = []
+
+        for row_index, (label, field_name, value) in enumerate(self.common_field_definitions(node)):
+            ttk.Label(self.common_form_frame, text=label).grid(
+                row=row_index,
+                column=0,
+                sticky="w",
+                padx=(0, 8),
+                pady=2,
+            )
+            var = tk.StringVar(value=value)
+            entry = ttk.Entry(self.common_form_frame, textvariable=var, width=80)
+            entry.grid(row=row_index, column=1, sticky="ew", pady=2)
+            self.common_field_vars.append((field_name, var))
+
+        self.common_form_frame.columnconfigure(1, weight=1)
+
+    def populate_raw_fields(self, node):
+        for item in self.raw_fields_tree.get_children():
+            self.raw_fields_tree.delete(item)
+
+        self.raw_field_items = {}
+        self.raw_field_name_var.set("Select a field")
+        self.raw_value_text.delete("1.0", tk.END)
+
+        for field_name in self.model.fieldnames:
+            value = str(node.row.get(field_name, ""))
+            preview = value.replace("\r", "").replace("\n", "\\n")
+            if len(preview) > 160:
+                preview = preview[:157] + "..."
+            tree_item = self.raw_fields_tree.insert("", tk.END, values=(field_name, preview))
+            self.raw_field_items[tree_item] = field_name
+
+    def populate_validation_details(self, node):
+        item = node.item
+        assert item is not None
+
+        if not item.validation:
+            self.set_validation_text("No validation messages for this work item.")
             return
 
         lines = []
 
-        # Show commonly useful fields first.
-        preferred_columns = [
-            self.model.id_col,
-            self.model.type_col,
-            self.model.title_col,
-            self.model.state_col,
-            self.model.assigned_to_col,
-            self.model.parent_col,
-            self.model.effort_col,
-            self.model.remaining_col,
-            self.model.completed_col,
-            self.model.area_col,
-            self.model.iteration_col,
-            self.model.tags_col,
-            self.model.url_col,
-        ]
+        for message in item.validation:
+            location = ""
+            if message.field:
+                location = f" ({message.field})"
+            lines.append(f"{message.severity.upper()}: {message.message}{location}")
 
-        seen = set()
+        self.set_validation_text("\n".join(lines))
 
-        for col in preferred_columns:
-            if col and col in node.row and col not in seen:
-                seen.add(col)
-                lines.append(f"{col}: {node.row.get(col, '')}")
+    def set_validation_text(self, text):
+        self.validation_text.configure(state=tk.NORMAL)
+        self.validation_text.delete("1.0", tk.END)
+        self.validation_text.insert(tk.END, text)
+        self.validation_text.configure(state=tk.DISABLED)
 
-        # Then show the rest.
-        for col in self.model.fieldnames:
-            if col not in seen:
-                lines.append(f"{col}: {node.row.get(col, '')}")
+    def on_raw_field_select(self, _event):
+        selection = self.raw_fields_tree.selection()
 
-        self.details_text.insert(tk.END, "\n".join(lines))
+        if not selection or not self.details_local_id or not self.model:
+            return
+
+        field_name = self.raw_field_items.get(selection[0])
+
+        if not field_name:
+            return
+
+        node = self.model.get_node(self.details_local_id)
+
+        if not node or not node.item:
+            return
+
+        self.raw_field_name_var.set(field_name)
+        self.raw_value_text.delete("1.0", tk.END)
+        self.raw_value_text.insert(tk.END, str(node.item.fields.get(field_name, "")))
+
+    def select_raw_field(self, field_name):
+        for tree_item, item_field_name in self.raw_field_items.items():
+            if item_field_name == field_name:
+                self.raw_fields_tree.selection_set(tree_item)
+                self.raw_fields_tree.focus(tree_item)
+                self.raw_fields_tree.see(tree_item)
+                self.on_raw_field_select(None)
+                return True
+
+        return False
+
+    def apply_common_field_edits(self):
+        if not self.details_local_id or not self.model:
+            messagebox.showinfo("Apply Common Fields", "Select a work item first.")
+            return
+
+        node = self.model.get_node(self.details_local_id)
+
+        if not node or not node.item:
+            messagebox.showinfo("Apply Common Fields", "The selected work item is no longer available.")
+            return
+
+        changed = False
+
+        for field_name, var in self.common_field_vars:
+            value = var.get()
+
+            if field_name == "__title__":
+                if value != node.item.title:
+                    self.model.edit_title(node.item.local_id, value)
+                    changed = True
+                continue
+
+            current_value = str(node.item.fields.get(field_name, ""))
+
+            if value != current_value:
+                self.model.edit_field(node.item.local_id, field_name, value)
+                changed = True
+
+        if changed:
+            self.refresh_after_model_change(node.item.local_id)
+        else:
+            self.status_var.set("No common field changes to apply.")
+
+    def apply_raw_field_edit(self):
+        if not self.details_local_id or not self.model:
+            messagebox.showinfo("Apply Raw Field", "Select a work item first.")
+            return
+
+        selection = self.raw_fields_tree.selection()
+
+        if not selection:
+            messagebox.showinfo("Apply Raw Field", "Select a raw field first.")
+            return
+
+        field_name = self.raw_field_items.get(selection[0])
+
+        if not field_name:
+            return
+
+        node = self.model.get_node(self.details_local_id)
+
+        if not node or not node.item:
+            messagebox.showinfo("Apply Raw Field", "The selected work item is no longer available.")
+            return
+
+        value = self.raw_value_text.get("1.0", "end-1c")
+
+        if value == str(node.item.fields.get(field_name, "")):
+            self.status_var.set("No raw field changes to apply.")
+            return
+
+        self.model.edit_field(node.item.local_id, field_name, value)
+        self.refresh_after_model_change(node.item.local_id)
+        self.select_raw_field(field_name)
 
     def selected_local_id(self):
         selection = self.tree.selection()
@@ -453,7 +692,9 @@ class AdoWorkItemsViewer(tk.Tk):
                 self.tree.focus(tree_item)
                 self.tree.see(tree_item)
                 self.show_details(node)
-                return
+                return True
+
+        return False
 
     def selected_real_node(self, action_name):
         if not self.model:

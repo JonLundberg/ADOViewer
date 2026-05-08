@@ -42,22 +42,7 @@ class WorkItemModel:
         self.rows = [dict(row) for row in rows]
         self.local_id_factory = local_id_factory or _new_local_id
 
-        self.columns: ColumnMap = detect_columns(self.fieldnames)
-        self.id_col = self.columns.id_col
-        self.rev_col = self.columns.rev_col
-        self.type_col = self.columns.type_col
-        self.title_col = self.columns.title_col
-        self.state_col = self.columns.state_col
-        self.assigned_to_col = self.columns.assigned_to_col
-        self.tags_col = self.columns.tags_col
-        self.url_col = self.columns.url_col
-        self.parent_col = self.columns.parent_col
-        self.area_col = self.columns.area_col
-        self.iteration_col = self.columns.iteration_col
-        self.effort_col = self.columns.effort_col
-        self.remaining_col = self.columns.remaining_col
-        self.completed_col = self.columns.completed_col
-        self.title_level_columns = self.columns.title_level_columns
+        self._refresh_columns()
 
         self.root = WorkItemNode("__root__", synthetic=True)
         self.all_nodes: list[WorkItemNode] = []
@@ -339,6 +324,7 @@ class WorkItemModel:
 
         if field_name not in self.fieldnames:
             self.fieldnames.append(field_name)
+            self._refresh_columns()
 
         item.fields[field_name] = value
         self._refresh_item_core_fields(item)
@@ -503,6 +489,24 @@ class WorkItemModel:
         self.nodes_by_local_id[local_id] = node
         return node
 
+    def _refresh_columns(self) -> None:
+        self.columns: ColumnMap = detect_columns(self.fieldnames)
+        self.id_col = self.columns.id_col
+        self.rev_col = self.columns.rev_col
+        self.type_col = self.columns.type_col
+        self.title_col = self.columns.title_col
+        self.state_col = self.columns.state_col
+        self.assigned_to_col = self.columns.assigned_to_col
+        self.tags_col = self.columns.tags_col
+        self.url_col = self.columns.url_col
+        self.parent_col = self.columns.parent_col
+        self.area_col = self.columns.area_col
+        self.iteration_col = self.columns.iteration_col
+        self.effort_col = self.columns.effort_col
+        self.remaining_col = self.columns.remaining_col
+        self.completed_col = self.columns.completed_col
+        self.title_level_columns = self.columns.title_level_columns
+
     def _new_node(
         self,
         title: str,
@@ -550,6 +554,7 @@ class WorkItemModel:
         self.title_col = "Title"
         if self.title_col not in self.fieldnames:
             self.fieldnames.append(self.title_col)
+            self._refresh_columns()
 
         return self.title_col
 
@@ -560,6 +565,7 @@ class WorkItemModel:
         self.type_col = "Work Item Type"
         if self.type_col not in self.fieldnames:
             self.fieldnames.append(self.type_col)
+            self._refresh_columns()
 
         return self.type_col
 

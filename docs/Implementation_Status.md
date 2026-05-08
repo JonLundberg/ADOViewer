@@ -27,6 +27,10 @@ Milestone 3 has started:
 - Tree rows are tagged for dirty and validation states.
 - The status bar summarizes total items, dirty counts, and validation counts after load and edits.
 - Selection is restored after command-driven tree refreshes when the selected item remains visible.
+- The details pane now has editable tabs for common fields, raw CSV fields, and item-level validation messages.
+- Common-field edits update title/type/state/assignment/path/tag fields through the model and refresh dirty/validation state.
+- Raw-field edits preserve all original CSV columns and can edit multi-line values.
+- The model refreshes detected standard columns when the editor introduces fields such as `Work Item Type` or `State`.
 
 ## Next Planned Work
 
@@ -34,7 +38,6 @@ Next position in the plan: **Milestone 3 - Editor UI**.
 
 Expected next work:
 
-- Replace the read-only details pane with an editor for common and raw fields.
 - Add context menu actions.
 - Add project save/reopen support.
 - Preserve expansion across edits and filters.
