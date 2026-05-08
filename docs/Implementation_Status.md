@@ -38,6 +38,8 @@ Milestone 3 has started:
 - The File menu and toolbar can open projects, save the current project, and save as a new project file. `Ctrl+S` saves the current project.
 - The app can start directly from an `.adoviewer.json` project path.
 - Project round-trip tests cover local ID, hierarchy, source path, original fields, and dirty-state preservation.
+- Tree expansion state is now preserved across edits, validation refreshes, and filter changes using stable local/synthetic node keys instead of transient Treeview item IDs.
+- Filtering opens matching ancestor paths temporarily so matches are visible, while clearing the filter restores the prior expansion state unless the user explicitly changed it.
 
 ## Next Planned Work
 
@@ -45,5 +47,4 @@ Next position in the plan: **Milestone 3 - Editor UI**.
 
 Expected next work:
 
-- Preserve expansion across edits and filters.
 - Add a column chooser.

@@ -50,6 +50,9 @@ class AdoWorkItemsViewer(tk.Tk):
         self.details_local_id = None
         self.common_field_vars = []
         self.raw_field_items = {}
+        self.expanded_node_keys = set()
+        self.displayed_filter_text = ""
+        self.updating_tree = False
 
         self.create_widgets()
         self.create_menu()
@@ -224,6 +227,8 @@ class AdoWorkItemsViewer(tk.Tk):
         tree_frame.columnconfigure(0, weight=1)
 
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
+        self.tree.bind("<<TreeviewOpen>>", self.on_tree_open)
+        self.tree.bind("<<TreeviewClose>>", self.on_tree_close)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
         self.tree.bind("<Button-3>", self.show_tree_context_menu)
         self.tree.bind("<Button-2>", self.show_tree_context_menu)
@@ -339,7 +344,9 @@ class AdoWorkItemsViewer(tk.Tk):
             self.current_path = path
             self.project_path = None
             self.source_path = path
-            self.populate_tree()
+            self.filter_var.set("")
+            self.reset_expansion_state()
+            self.populate_tree(capture_expansion=False)
             self.title(f"Azure DevOps Work Items Viewer - {os.path.basename(path)}")
             self.update_status()
 
@@ -353,7 +360,9 @@ class AdoWorkItemsViewer(tk.Tk):
             self.current_path = path
             self.project_path = path
             self.source_path = document.source_path
-            self.populate_tree()
+            self.filter_var.set("")
+            self.reset_expansion_state()
+            self.populate_tree(capture_expansion=False)
             self.title(f"Azure DevOps Work Items Viewer - {os.path.basename(path)}")
             self.update_status()
 
@@ -423,21 +432,109 @@ class AdoWorkItemsViewer(tk.Tk):
 
         self.tree_item_to_node.clear()
 
-    def populate_tree(self, filter_text="", select_local_id=None):
-        if select_local_id is None:
-            select_local_id = self.selected_local_id()
+    def expansion_key_for_node(self, node):
+        if node.item:
+            return f"item:{node.item.local_id}"
 
-        self.clear_tree()
+        return f"synthetic:{node.key}"
+
+    def reset_expansion_state(self):
+        self.expanded_node_keys = set()
+        self.displayed_filter_text = ""
 
         if not self.model:
             return
 
-        filter_text = filter_text.strip().lower()
+        def visit(node):
+            if node.children:
+                self.expanded_node_keys.add(self.expansion_key_for_node(node))
+
+            for child in node.children:
+                visit(child)
 
         for child in self.model.root.children:
-            self.insert_node_if_matching("", child, filter_text)
+            visit(child)
 
-        self.expand_all()
+    def capture_current_expansion(self):
+        visible_keys = set()
+        expanded_keys = set()
+
+        def visit(tree_item):
+            node = self.tree_item_to_node.get(tree_item)
+
+            if node:
+                key = self.expansion_key_for_node(node)
+                visible_keys.add(key)
+                if self.tree.item(tree_item, "open"):
+                    expanded_keys.add(key)
+
+            for child in self.tree.get_children(tree_item):
+                visit(child)
+
+        for item in self.tree.get_children():
+            visit(item)
+
+        self.expanded_node_keys.difference_update(visible_keys)
+        self.expanded_node_keys.update(expanded_keys)
+
+    def node_has_matching_descendant(self, node, filter_text):
+        return any(
+            self.node_matches_filter(child, filter_text)
+            for child in node.children
+        )
+
+    def should_open_node(self, node, filter_text):
+        key = self.expansion_key_for_node(node)
+
+        if key in self.expanded_node_keys:
+            return True
+
+        return bool(filter_text and self.node_has_matching_descendant(node, filter_text))
+
+    def remember_tree_item_expansion(self, tree_item, is_open):
+        node = self.tree_item_to_node.get(tree_item)
+
+        if not node:
+            return
+
+        key = self.expansion_key_for_node(node)
+
+        if is_open:
+            self.expanded_node_keys.add(key)
+        else:
+            self.expanded_node_keys.discard(key)
+
+    def remember_open_ancestors(self, tree_item):
+        parent = self.tree.parent(tree_item)
+
+        while parent:
+            self.remember_tree_item_expansion(parent, True)
+            parent = self.tree.parent(parent)
+
+    def populate_tree(self, filter_text="", select_local_id=None, capture_expansion=True):
+        if select_local_id is None:
+            select_local_id = self.selected_local_id()
+
+        if capture_expansion and not self.displayed_filter_text:
+            self.capture_current_expansion()
+
+        filter_text = filter_text.strip().lower()
+        self.updating_tree = True
+
+        try:
+            self.clear_tree()
+
+            if not self.model:
+                self.displayed_filter_text = filter_text
+                return
+
+            for child in self.model.root.children:
+                self.insert_node_if_matching("", child, filter_text)
+
+        finally:
+            self.updating_tree = False
+            self.displayed_filter_text = filter_text
+
         if select_local_id:
             if not self.select_local_id(select_local_id):
                 self.clear_details()
@@ -473,14 +570,14 @@ class AdoWorkItemsViewer(tk.Tk):
         if not self.node_matches_filter(node, filter_text):
             return None
 
-        item_id = self.insert_node(parent_tree_item, node)
+        item_id = self.insert_node(parent_tree_item, node, filter_text)
 
         for child in node.children:
             self.insert_node_if_matching(item_id, child, filter_text)
 
         return item_id
 
-    def insert_node(self, parent_tree_item, node):
+    def insert_node(self, parent_tree_item, node, filter_text):
         if node.synthetic:
             title = node.row.get("Synthetic Title", "Group")
             values = (
@@ -518,7 +615,7 @@ class AdoWorkItemsViewer(tk.Tk):
             text=title,
             values=values,
             tags=self.node_tags(node),
-            open=True,
+            open=self.should_open_node(node, filter_text),
         )
 
         self.tree_item_to_node[tree_item] = node
@@ -534,13 +631,16 @@ class AdoWorkItemsViewer(tk.Tk):
     def expand_all(self):
         for item in self.tree.get_children():
             self.set_open_recursive(item, True)
+        self.capture_current_expansion()
 
     def collapse_all(self):
         for item in self.tree.get_children():
             self.set_open_recursive(item, False)
+        self.capture_current_expansion()
 
     def set_open_recursive(self, item, open_value):
         self.tree.item(item, open=open_value)
+        self.remember_tree_item_expansion(item, open_value)
 
         for child in self.tree.get_children(item):
             self.set_open_recursive(child, open_value)
@@ -556,6 +656,24 @@ class AdoWorkItemsViewer(tk.Tk):
         node = self.tree_item_to_node.get(item)
 
         self.show_details(node)
+
+    def on_tree_open(self, _event):
+        if self.updating_tree:
+            return
+
+        tree_item = self.tree.focus()
+
+        if tree_item:
+            self.remember_tree_item_expansion(tree_item, True)
+
+    def on_tree_close(self, _event):
+        if self.updating_tree:
+            return
+
+        tree_item = self.tree.focus()
+
+        if tree_item:
+            self.remember_tree_item_expansion(tree_item, False)
 
     def show_tree_context_menu(self, event):
         tree_item = self.tree.identify_row(event.y)
@@ -899,6 +1017,8 @@ class AdoWorkItemsViewer(tk.Tk):
                 self.tree.selection_set(tree_item)
                 self.tree.focus(tree_item)
                 self.tree.see(tree_item)
+                if not self.displayed_filter_text:
+                    self.remember_open_ancestors(tree_item)
                 self.show_details(node)
                 return True
 
@@ -931,8 +1051,10 @@ class AdoWorkItemsViewer(tk.Tk):
         self.current_path = None
         self.project_path = None
         self.source_path = None
+        self.filter_var.set("")
+        self.reset_expansion_state()
         self.title("Azure DevOps Work Items Viewer - Untitled")
-        self.populate_tree()
+        self.populate_tree(capture_expansion=False)
         self.update_status()
         return True
 
