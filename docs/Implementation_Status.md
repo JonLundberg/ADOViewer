@@ -43,13 +43,22 @@ Milestone 3 is complete:
 - A column chooser is available from the View menu and toolbar.
 - The chooser can show, hide, reset, and apply the tree's data columns without changing work item data, raw fields, or project contents.
 
+Milestone 4 has started:
+
+- Azure-compatible tree CSV export is implemented with `Title N` hierarchy columns.
+- Exports are generated from the local tree in parent-before-child order, so new unsaved parent-child links do not need Azure IDs.
+- All-new exports omit the `ID` column; mixed existing/new exports keep existing IDs and leave new IDs blank.
+- Export rows exclude source `Parent ID`, normal `Title`, and old `Title N` hierarchy columns while preserving custom/non-hierarchy fields.
+- Deleted work items are omitted from Azure tree CSV export.
+- The File menu and toolbar can export the current model to an Azure tree CSV after validation passes.
+- Tests cover all-new hierarchy export, mixed existing/new IDs, deleted item omission, validation blocking, and UTF-8 CSV writing.
+
 ## Next Planned Work
 
 Next position in the plan: **Milestone 4 - CSV Export**.
 
 Expected next work:
 
-- Export Azure-compatible tree CSV with `Title N`.
 - Export round-trip CSV.
 - Split or block web-import CSVs over 1,000 Work Items.
 - Exclude ADOViewer metadata and preserve custom fields.

@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Any, Iterable
+
+
+class CsvExportError(ValueError):
+    """Raised when a model cannot be exported to CSV."""
 
 
 def normalize_column_name(name: str) -> str:
@@ -232,3 +236,122 @@ def read_csv_file(path: str) -> tuple[list[str], list[dict[str, str]]]:
             last_error = ex
 
     raise RuntimeError(f"Could not read CSV file: {last_error}")
+
+
+def iter_model_items_with_depth(model: Any) -> list[tuple[Any, int]]:
+    """Return non-deleted real work items in parent-before-child export order."""
+    items: list[tuple[Any, int]] = []
+
+    def visit(node: Any, depth: int) -> None:
+        if getattr(node, "synthetic", False):
+            for child in node.children:
+                visit(child, depth)
+            return
+
+        item = getattr(node, "item", None)
+
+        if item and item.state != "deleted":
+            items.append((item, depth))
+            child_depth = depth + 1
+        else:
+            child_depth = depth
+
+        for child in node.children:
+            visit(child, child_depth)
+
+    for child in model.root.children:
+        visit(child, 1)
+
+    return items
+
+
+def build_azure_tree_csv(model: Any) -> tuple[list[str], list[dict[str, str]]]:
+    """
+    Build an Azure DevOps tree CSV using Title 1 / Title 2 / ... columns.
+
+    The export is intentionally based on the local tree, not Parent ID, so
+    unsaved work items can be exported with their hierarchy intact.
+    """
+    messages = model.validate()
+    errors = [message for message in messages if message.severity == "error"]
+
+    if errors:
+        raise CsvExportError("Fix validation errors before exporting.")
+
+    items_with_depth = iter_model_items_with_depth(model)
+    max_depth = max((depth for _item, depth in items_with_depth), default=1)
+    title_columns = [f"Title {level}" for level in range(1, max_depth + 1)]
+    type_col = model.type_col or "Work Item Type"
+    id_col = model.id_col or "ID"
+    include_id = any(item.remote_id is not None for item, _depth in items_with_depth)
+
+    fieldnames: list[str] = []
+
+    if include_id:
+        fieldnames.append(id_col)
+
+    fieldnames.append(type_col)
+    fieldnames.extend(title_columns)
+    fieldnames.extend(
+        field_name
+        for field_name in azure_tree_extra_fieldnames(model, id_col, type_col)
+        if field_name not in fieldnames
+    )
+
+    rows = []
+
+    for item, depth in items_with_depth:
+        row = {field_name: "" for field_name in fieldnames}
+
+        if include_id:
+            row[id_col] = "" if item.state == "new" else _remote_id_text(item, model)
+
+        row[type_col] = item.work_item_type
+        row[title_columns[depth - 1]] = item.title
+
+        for field_name in fieldnames:
+            if field_name in {id_col, type_col} or field_name in title_columns:
+                continue
+            row[field_name] = str(item.fields.get(field_name, ""))
+
+        rows.append(row)
+
+    return fieldnames, rows
+
+
+def azure_tree_extra_fieldnames(model: Any, id_col: str, type_col: str) -> list[str]:
+    excluded = {
+        id_col,
+        type_col,
+        model.title_col,
+        model.parent_col,
+    }
+    excluded.update(column for _level, column in model.title_level_columns)
+    excluded.discard(None)
+
+    return [
+        field_name
+        for field_name in model.fieldnames
+        if field_name not in excluded
+    ]
+
+
+def write_azure_tree_csv(model: Any, path: str) -> tuple[list[str], list[dict[str, str]]]:
+    fieldnames, rows = build_azure_tree_csv(model)
+
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, dialect=csv.excel)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return fieldnames, rows
+
+
+def _remote_id_text(item: Any, model: Any) -> str:
+    if item.remote_id is not None:
+        return str(item.remote_id)
+
+    if model.id_col:
+        return str(item.fields.get(model.id_col, "")).strip()
+
+    return ""
