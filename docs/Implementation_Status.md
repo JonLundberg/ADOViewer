@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 2 - Canonical Editable Model**.
+Current position in the plan: **Milestone 3 - Editor UI**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -20,16 +20,22 @@ Milestone 2 is implemented in the model layer:
 
 Milestone 2 intentionally defers undo/redo. The implementation plan allows clear dirty tracking first if command objects are not worth the complexity yet.
 
+Milestone 3 has started:
+
+- Toolbar and menu commands now call model operations for add root, add child, add sibling, edit title, delete/restore, move up/down, indent, outdent, and validate.
+- The tree includes a local status column for new, modified, deleted, warning, and error states.
+- Tree rows are tagged for dirty and validation states.
+- The status bar summarizes total items, dirty counts, and validation counts after load and edits.
+- Selection is restored after command-driven tree refreshes when the selected item remains visible.
+
 ## Next Planned Work
 
 Next position in the plan: **Milestone 3 - Editor UI**.
 
 Expected next work:
 
-- Add toolbar and menu commands for model operations.
 - Replace the read-only details pane with an editor for common and raw fields.
-- Show dirty and validation markers in the tree.
 - Add context menu actions.
 - Add project save/reopen support.
-- Preserve selection and expansion across edits and filters.
+- Preserve expansion across edits and filters.
 - Add a column chooser.
