@@ -31,6 +31,8 @@ Milestone 3 has started:
 - Common-field edits update title/type/state/assignment/path/tag fields through the model and refresh dirty/validation state.
 - Raw-field edits preserve all original CSV columns and can edit multi-line values.
 - The model refreshes detected standard columns when the editor introduces fields such as `Work Item Type` or `State`.
+- The tree has a right-click context menu for add root/child/sibling, edit title, delete/restore, move, indent/outdent, make root, open URL, and validate.
+- Right-clicking selects the clicked row before showing actions, and actions are disabled when they do not apply to the current target.
 
 ## Next Planned Work
 
@@ -38,7 +40,6 @@ Next position in the plan: **Milestone 3 - Editor UI**.
 
 Expected next work:
 
-- Add context menu actions.
 - Add project save/reopen support.
 - Preserve expansion across edits and filters.
 - Add a column chooser.

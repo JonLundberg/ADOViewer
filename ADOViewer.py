@@ -214,6 +214,8 @@ class AdoWorkItemsViewer(tk.Tk):
 
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.tree.bind("<Double-1>", self.on_tree_double_click)
+        self.tree.bind("<Button-3>", self.show_tree_context_menu)
+        self.tree.bind("<Button-2>", self.show_tree_context_menu)
 
         self.details_title_var = tk.StringVar(value="Details")
         details_label = ttk.Label(details_frame, textvariable=self.details_title_var)
@@ -451,6 +453,109 @@ class AdoWorkItemsViewer(tk.Tk):
         node = self.tree_item_to_node.get(item)
 
         self.show_details(node)
+
+    def show_tree_context_menu(self, event):
+        tree_item = self.tree.identify_row(event.y)
+
+        if tree_item:
+            self.tree.selection_set(tree_item)
+            self.tree.focus(tree_item)
+            node = self.tree_item_to_node.get(tree_item)
+            self.show_details(node)
+        else:
+            self.tree.selection_remove(self.tree.selection())
+            node = None
+            self.clear_details()
+
+        menu = tk.Menu(self, tearoff=False)
+        real_item_selected = bool(node and node.item)
+        synthetic_selected = bool(node and node.synthetic)
+        can_add_root = bool(self.model) or not node
+        has_url = bool(real_item_selected and self.model and self.model.row_url(node.row))
+        state_for_real = tk.NORMAL if real_item_selected else tk.DISABLED
+        state_for_add_root = tk.NORMAL if can_add_root else tk.DISABLED
+        state_for_validate = tk.NORMAL if self.model else tk.DISABLED
+        state_for_url = tk.NORMAL if has_url else tk.DISABLED
+
+        menu.add_command(
+            label="Add Root",
+            command=self.add_root_item,
+            state=state_for_add_root,
+        )
+        menu.add_command(
+            label="Add Child",
+            command=self.add_child_item,
+            state=state_for_real,
+        )
+        menu.add_command(
+            label="Add Sibling",
+            command=self.add_sibling_item,
+            state=state_for_real,
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Edit Title...",
+            command=self.edit_selected_title,
+            state=state_for_real,
+        )
+
+        delete_label = "Delete / Restore"
+        if real_item_selected and node.item.state == "deleted":
+            delete_label = "Restore"
+        elif real_item_selected:
+            delete_label = "Delete"
+
+        menu.add_command(
+            label=delete_label,
+            command=self.toggle_delete_selected,
+            state=state_for_real,
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Move Up",
+            command=self.move_selected_up,
+            state=state_for_real,
+        )
+        menu.add_command(
+            label="Move Down",
+            command=self.move_selected_down,
+            state=state_for_real,
+        )
+        menu.add_command(
+            label="Indent",
+            command=self.indent_selected,
+            state=state_for_real,
+        )
+        menu.add_command(
+            label="Outdent",
+            command=self.outdent_selected,
+            state=state_for_real,
+        )
+        menu.add_command(
+            label="Make Root",
+            command=self.make_selected_root,
+            state=state_for_real,
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="Open URL",
+            command=self.open_selected_url,
+            state=state_for_url,
+        )
+        menu.add_command(
+            label="Validate",
+            command=self.validate_model,
+            state=state_for_validate,
+        )
+
+        if synthetic_selected:
+            menu.add_separator()
+            menu.add_command(label="Grouping node - select a work item to edit", state=tk.DISABLED)
+
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     def show_details(self, node):
         if not node:
@@ -892,6 +997,19 @@ class AdoWorkItemsViewer(tk.Tk):
         if not changed:
             self.status_var.set("Selected work item cannot be outdented.")
 
+    def make_selected_root(self):
+        node = self.selected_real_node("Make Root")
+
+        if not node:
+            return
+
+        if node.parent is self.model.root:
+            self.status_var.set("Selected work item is already a root item.")
+            return
+
+        self.model.reparent(node.item.local_id, None)
+        self.refresh_after_model_change(node.item.local_id)
+
     def validate_model(self):
         if not self.model:
             messagebox.showinfo("Validate", "Open a CSV or add a root work item first.")
@@ -976,6 +1094,22 @@ class AdoWorkItemsViewer(tk.Tk):
             f"{errors} errors, {warnings} warnings"
         )
 
+    def open_selected_url(self):
+        node = self.selected_real_node("Open URL")
+
+        if not node:
+            return
+
+        url = self.model.row_url(node.row)
+
+        if url:
+            webbrowser.open(url)
+        else:
+            messagebox.showinfo(
+                "No URL",
+                "This CSV row does not appear to contain a URL column."
+            )
+
     def on_tree_double_click(self, event):
         selection = self.tree.selection()
 
@@ -988,15 +1122,7 @@ class AdoWorkItemsViewer(tk.Tk):
         if not node or node.synthetic:
             return
 
-        url = self.model.row_url(node.row)
-
-        if url:
-            webbrowser.open(url)
-        else:
-            messagebox.showinfo(
-                "No URL",
-                "This CSV row does not appear to contain a URL column."
-            )
+        self.open_selected_url()
 
 
 # ----------------------------
