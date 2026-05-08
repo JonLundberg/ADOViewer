@@ -26,6 +26,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from adoviewer.csv_io import read_csv_file
+from adoviewer.project_io import load_project_file, save_project_file
 from adoviewer.tree_model import WorkItemModel
 
 
@@ -43,6 +44,8 @@ class AdoWorkItemsViewer(tk.Tk):
 
         self.model = None
         self.current_path = None
+        self.project_path = None
+        self.source_path = None
         self.tree_item_to_node = {}
         self.details_local_id = None
         self.common_field_vars = []
@@ -53,13 +56,17 @@ class AdoWorkItemsViewer(tk.Tk):
         self.bind_keyboard_shortcuts()
 
         if initial_path:
-            self.load_csv(initial_path)
+            self.load_initial_path(initial_path)
 
     def create_menu(self):
         menu_bar = tk.Menu(self)
 
         file_menu = tk.Menu(menu_bar, tearoff=False)
         file_menu.add_command(label="Open CSV...", command=self.open_csv_dialog)
+        file_menu.add_command(label="Open Project...", command=self.open_project_dialog)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Project", command=self.save_project)
+        file_menu.add_command(label="Save Project As...", command=self.save_project_as)
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.destroy)
 
@@ -104,6 +111,7 @@ class AdoWorkItemsViewer(tk.Tk):
         self.tree.bind("<Control-Down>", handled(self.move_selected_down))
         self.tree.bind("<Control-Right>", handled(self.indent_selected))
         self.tree.bind("<Control-Left>", handled(self.outdent_selected))
+        self.bind_all("<Control-s>", handled(self.save_project))
 
     def create_widgets(self):
         outer = ttk.Frame(self)
@@ -113,6 +121,9 @@ class AdoWorkItemsViewer(tk.Tk):
         top_bar.pack(fill=tk.X, padx=8, pady=6)
 
         ttk.Button(top_bar, text="Open CSV...", command=self.open_csv_dialog).pack(side=tk.LEFT)
+        ttk.Button(top_bar, text="Open Project...", command=self.open_project_dialog).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Button(top_bar, text="Save", command=self.save_project).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Button(top_bar, text="Save As", command=self.save_project_as).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top_bar, text="Add Root", command=self.add_root_item).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Button(top_bar, text="Add Child", command=self.add_child_item).pack(side=tk.LEFT, padx=(4, 0))
         ttk.Button(top_bar, text="Add Sibling", command=self.add_sibling_item).pack(side=tk.LEFT, padx=(4, 0))
@@ -302,17 +313,109 @@ class AdoWorkItemsViewer(tk.Tk):
         if path:
             self.load_csv(path)
 
+    def open_project_dialog(self):
+        path = filedialog.askopenfilename(
+            title="Open ADOViewer Project",
+            filetypes=[
+                ("ADOViewer projects", "*.adoviewer.json"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if path:
+            self.load_project(path)
+
+    def load_initial_path(self, path):
+        if path.lower().endswith(".adoviewer.json"):
+            self.load_project(path)
+        else:
+            self.load_csv(path)
+
     def load_csv(self, path):
         try:
             fieldnames, rows = read_csv_file(path)
             self.model = WorkItemModel(fieldnames, rows)
             self.current_path = path
+            self.project_path = None
+            self.source_path = path
             self.populate_tree()
             self.title(f"Azure DevOps Work Items Viewer - {os.path.basename(path)}")
             self.update_status()
 
         except Exception as ex:
             messagebox.showerror("Error", str(ex))
+
+    def load_project(self, path):
+        try:
+            document = load_project_file(path)
+            self.model = document.model
+            self.current_path = path
+            self.project_path = path
+            self.source_path = document.source_path
+            self.populate_tree()
+            self.title(f"Azure DevOps Work Items Viewer - {os.path.basename(path)}")
+            self.update_status()
+
+        except Exception as ex:
+            messagebox.showerror("Error", str(ex))
+
+    def save_project(self):
+        if not self.model:
+            messagebox.showinfo("Save Project", "Open a CSV or add a root work item first.")
+            return
+
+        if not self.project_path:
+            self.save_project_as()
+            return
+
+        self.write_project(self.project_path)
+
+    def save_project_as(self):
+        if not self.model:
+            messagebox.showinfo("Save Project As", "Open a CSV or add a root work item first.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            title="Save ADOViewer Project",
+            defaultextension=".adoviewer.json",
+            initialfile=self.default_project_filename(),
+            filetypes=[
+                ("ADOViewer projects", "*.adoviewer.json"),
+                ("JSON files", "*.json"),
+                ("All files", "*.*"),
+            ],
+        )
+
+        if path:
+            self.write_project(path)
+
+    def default_project_filename(self):
+        path = self.project_path or self.current_path
+
+        if not path:
+            return "work-items.adoviewer.json"
+
+        base_name = os.path.basename(path)
+
+        if base_name.lower().endswith(".adoviewer.json"):
+            return base_name
+
+        stem, _extension = os.path.splitext(base_name)
+        return f"{stem}.adoviewer.json"
+
+    def write_project(self, path):
+        try:
+            save_project_file(self.model, path, source_path=self.source_path)
+            self.project_path = path
+            self.current_path = path
+            self.title(f"Azure DevOps Work Items Viewer - {os.path.basename(path)}")
+            self.update_status()
+            self.status_var.set(f"Saved project {os.path.basename(path)}.")
+
+        except Exception as ex:
+            messagebox.showerror("Error", str(ex))
+
 
     def clear_tree(self):
         for item in self.tree.get_children():
@@ -826,6 +929,8 @@ class AdoWorkItemsViewer(tk.Tk):
 
         self.model = WorkItemModel(["ID", "Work Item Type", "Title", "State"], [])
         self.current_path = None
+        self.project_path = None
+        self.source_path = None
         self.title("Azure DevOps Work Items Viewer - Untitled")
         self.populate_tree()
         self.update_status()

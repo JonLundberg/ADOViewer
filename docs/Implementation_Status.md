@@ -33,6 +33,11 @@ Milestone 3 has started:
 - The model refreshes detected standard columns when the editor introduces fields such as `Work Item Type` or `State`.
 - The tree has a right-click context menu for add root/child/sibling, edit title, delete/restore, move, indent/outdent, make root, open URL, and validate.
 - Right-clicking selects the clicked row before showing actions, and actions are disabled when they do not apply to the current target.
+- Project save/reopen support is implemented with `.adoviewer.json` files.
+- Project files preserve CSV field order, source path, local IDs, local parent-child order, original/current fields, Azure IDs/revisions, and new/modified/deleted state.
+- The File menu and toolbar can open projects, save the current project, and save as a new project file. `Ctrl+S` saves the current project.
+- The app can start directly from an `.adoviewer.json` project path.
+- Project round-trip tests cover local ID, hierarchy, source path, original fields, and dirty-state preservation.
 
 ## Next Planned Work
 
@@ -40,6 +45,5 @@ Next position in the plan: **Milestone 3 - Editor UI**.
 
 Expected next work:
 
-- Add project save/reopen support.
 - Preserve expansion across edits and filters.
 - Add a column chooser.

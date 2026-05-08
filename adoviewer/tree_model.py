@@ -31,6 +31,28 @@ def _parse_int(value: object) -> int | None:
         return None
 
 
+def _optional_int(value: object) -> int | None:
+    return _parse_int(value)
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+    return text or None
+
+
+def _string_dict(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+
+    return {
+        str(key): "" if dict_value is None else str(dict_value)
+        for key, dict_value in value.items()
+    }
+
+
 class WorkItemModel:
     def __init__(
         self,
@@ -54,6 +76,138 @@ class WorkItemModel:
         self._snapshot_original_hierarchy()
         self._initializing = False
         self.validate()
+
+    @classmethod
+    def from_project_items(
+        cls,
+        fieldnames: Iterable[str],
+        item_records: Iterable[dict[str, object]],
+        root_order: Iterable[str] | None = None,
+        local_id_factory: Callable[[], str] | None = None,
+    ) -> WorkItemModel:
+        model = cls.__new__(cls)
+        model.fieldnames = list(fieldnames or [])
+        model.rows = []
+        model.local_id_factory = local_id_factory or _new_local_id
+
+        item_records = list(item_records or [])
+
+        if not model.fieldnames:
+            for record in item_records:
+                fields = record.get("fields")
+                if not isinstance(fields, dict):
+                    continue
+                for field_name in fields:
+                    field_name = str(field_name)
+                    if field_name not in model.fieldnames:
+                        model.fieldnames.append(field_name)
+
+        model._refresh_columns()
+
+        model.root = WorkItemNode("__root__", synthetic=True)
+        model.all_nodes = []
+        model.nodes_by_local_id = {}
+        model.validation_messages = []
+        model._initializing = True
+
+        for record in item_records:
+            if not isinstance(record, dict):
+                raise ValueError("Project work item entries must be objects.")
+
+            local_id = str(record.get("local_id") or model._allocate_local_id()).strip()
+            if not local_id:
+                local_id = model._allocate_local_id()
+
+            if local_id in model.nodes_by_local_id:
+                raise ValueError(f"Duplicate local ID {local_id!r} in project file.")
+
+            fields = _string_dict(record.get("fields") if isinstance(record.get("fields"), dict) else {})
+            original_fields = _string_dict(
+                record.get("original_fields") if isinstance(record.get("original_fields"), dict) else {}
+            )
+
+            for field_name in model.fieldnames:
+                fields.setdefault(field_name, "")
+
+            state = str(record.get("state") or "unchanged")
+            if state not in {"unchanged", "new", "modified", "deleted"}:
+                raise ValueError(f"Unsupported work item state {state!r} in project file.")
+
+            parent_local_id = _optional_string(record.get("parent_local_id"))
+            item = WorkItem(
+                local_id=local_id,
+                remote_id=_optional_int(record.get("remote_id")),
+                rev=_optional_int(record.get("rev")),
+                work_item_type=str(record.get("work_item_type") or model.row_type(fields)),
+                title=str(record.get("title") or model.row_title(fields)),
+                fields=fields,
+                original_fields=original_fields,
+                parent_local_id=parent_local_id,
+                original_parent_local_id=_optional_string(
+                    record.get("original_parent_local_id")
+                ) if "original_parent_local_id" in record else parent_local_id,
+                children=[
+                    str(child_id)
+                    for child_id in record.get("children", [])
+                    if str(child_id).strip()
+                ],
+                source_row_index=_optional_int(record.get("source_row_index")),
+                state=state,  # type: ignore[arg-type]
+            )
+            node = WorkItemNode(local_id, item=item)
+            model.rows.append(fields)
+            model.all_nodes.append(node)
+            model.nodes_by_local_id[local_id] = node
+
+        visited: set[str] = set()
+
+        def attach(parent: WorkItemNode, child_id: str) -> None:
+            if child_id in visited:
+                return
+
+            child = model.nodes_by_local_id.get(child_id)
+            if not child:
+                return
+
+            parent.add_child(child)
+            visited.add(child_id)
+
+            assert child.item is not None
+            for grandchild_id in child.item.children:
+                attach(child, grandchild_id)
+
+        root_ids = [
+            str(local_id)
+            for local_id in (root_order or [])
+            if str(local_id).strip()
+        ]
+
+        if not root_ids:
+            root_ids = [
+                node.item.local_id
+                for node in model.all_nodes
+                if node.item and node.item.parent_local_id is None
+            ]
+
+        for local_id in root_ids:
+            attach(model.root, local_id)
+
+        for node in model.all_nodes:
+            assert node.item is not None
+
+            if node.item.local_id in visited:
+                continue
+
+            parent = None
+            if node.item.parent_local_id:
+                parent = model.nodes_by_local_id.get(node.item.parent_local_id)
+
+            attach(parent or model.root, node.item.local_id)
+
+        model._sync_item_hierarchy_from_tree()
+        model._initializing = False
+        model.validate()
+        return model
 
     def row_id(self, row: dict[str, str]) -> str:
         if self.id_col:
@@ -468,7 +622,7 @@ class WorkItemModel:
         return list(self.validation_messages)
 
     def _node_from_row(self, index: int, row: dict[str, str]) -> WorkItemNode:
-        local_id = self.local_id_factory()
+        local_id = self._allocate_local_id()
         item_id = self.row_id(row)
         remote_id = _parse_int(item_id)
         state = "new" if self.id_col and not item_id else "unchanged"
@@ -488,6 +642,14 @@ class WorkItemModel:
         self.all_nodes.append(node)
         self.nodes_by_local_id[local_id] = node
         return node
+
+    def _allocate_local_id(self) -> str:
+        for _attempt in range(10000):
+            local_id = self.local_id_factory()
+            if local_id not in self.nodes_by_local_id:
+                return local_id
+
+        raise RuntimeError("Could not allocate a unique local work item ID.")
 
     def _refresh_columns(self) -> None:
         self.columns: ColumnMap = detect_columns(self.fieldnames)
@@ -530,7 +692,7 @@ class WorkItemModel:
             row[self.id_col] = ""
 
         item = WorkItem(
-            local_id=self.local_id_factory(),
+            local_id=self._allocate_local_id(),
             remote_id=None,
             rev=None,
             work_item_type=work_item_type,
@@ -675,6 +837,21 @@ class WorkItemModel:
         for node in self.all_nodes:
             if node.item:
                 node.item.original_parent_local_id = node.item.parent_local_id
+
+    def _sync_item_hierarchy_from_tree(self) -> None:
+        for node in self.all_nodes:
+            if node.item:
+                node.item.children = []
+
+        def visit(parent: WorkItemNode) -> None:
+            for child in parent.children:
+                if child.item:
+                    child.item.parent_local_id = parent.item.local_id if parent.item else None
+                    if parent.item:
+                        parent.item.children.append(child.item.local_id)
+                visit(child)
+
+        visit(self.root)
 
     def _reset_validation_messages(self) -> None:
         self.validation_messages = []
