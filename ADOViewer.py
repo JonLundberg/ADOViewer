@@ -41,6 +41,33 @@ from adoviewer.tree_model import WorkItemModel
 # Tkinter UI
 # ----------------------------
 
+_PALETTE = {
+    "bg": "#ffffff",
+    "surface": "#f7f8fa",
+    "surface_alt": "#eef0f4",
+    "border": "#e3e6ec",
+    "border_strong": "#cfd3dc",
+    "text": "#111827",
+    "muted": "#6b7280",
+    "accent": "#2563eb",
+    "accent_hover": "#1d4ed8",
+    "accent_active": "#1e40af",
+    "hover": "#eef2ff",
+    "selected": "#dbeafe",
+    "row_alt": "#fafbfc",
+    "success": "#166534",
+    "warning": "#92400e",
+    "deleted": "#9ca3af",
+    "error_bg": "#fee2e2",
+    "warning_bg": "#fef3c7",
+}
+
+_FONT = ("Segoe UI", 10)
+_FONT_SEMI = ("Segoe UI Semibold", 10)
+_FONT_SMALL = ("Segoe UI", 9)
+_FONT_HEAD = ("Segoe UI Semibold", 11)
+
+
 class AdoWorkItemsViewer(tk.Tk):
     def __init__(self, initial_path=None):
         super().__init__()
@@ -48,6 +75,8 @@ class AdoWorkItemsViewer(tk.Tk):
         self.title("Azure DevOps Work Items Viewer")
         self.geometry("1450x850")
         self.minsize(1000, 600)
+        self.configure(background=_PALETTE["bg"])
+        self._init_style()
 
         self.model = None
         self.current_path = None
@@ -60,9 +89,10 @@ class AdoWorkItemsViewer(tk.Tk):
         self.expanded_node_keys = set()
         self.displayed_filter_text = ""
         self.updating_tree = False
+        # The Status column is intentionally gone: state is shown as a small colored
+        # dot in the title column. Type and State remain as text columns.
         self.tree_column_specs = [
             ("id", "ID", 75, 60, False),
-            ("local_status", "Status", 95, 80, False),
             ("type", "Type", 130, 90, False),
             ("state", "State", 110, 80, False),
             ("assigned_to", "Assigned To", 180, 100, False),
@@ -73,6 +103,8 @@ class AdoWorkItemsViewer(tk.Tk):
             ("iteration", "Iteration", 180, 100, False),
             ("tags", "Tags", 220, 100, True),
         ]
+        # Cache of small PhotoImage dots, keyed by state name.
+        self._dot_images = {}
         self.visible_tree_columns = [column_id for column_id, *_rest in self.tree_column_specs]
         self.column_dialog = None
         self.column_chooser_vars = {}
@@ -84,46 +116,465 @@ class AdoWorkItemsViewer(tk.Tk):
         if initial_path:
             self.load_initial_path(initial_path)
 
+    def _init_style(self):
+        """Configure a modern, flat ttk theme for the whole app."""
+        style = ttk.Style(self)
+
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        p = _PALETTE
+
+        # Frames and containers
+        style.configure("TFrame", background=p["bg"])
+        style.configure("Toolbar.TFrame", background=p["surface"])
+        style.configure("Status.TFrame", background=p["surface"])
+        style.configure("Card.TFrame", background=p["bg"])
+        style.configure("TPanedwindow", background=p["bg"])
+
+        # Labels
+        style.configure("TLabel", background=p["bg"], foreground=p["text"], font=_FONT)
+        style.configure(
+            "Toolbar.TLabel",
+            background=p["surface"],
+            foreground=p["muted"],
+            font=_FONT,
+        )
+        style.configure(
+            "Status.TLabel",
+            background=p["surface"],
+            foreground=p["muted"],
+            font=_FONT_SMALL,
+        )
+        style.configure(
+            "Heading.TLabel",
+            background=p["bg"],
+            foreground=p["text"],
+            font=_FONT_HEAD,
+        )
+        # Heading shown on the toolbar / header strip (matching surface bg).
+        style.configure(
+            "HeaderFile.TLabel",
+            background=p["surface"],
+            foreground=p["text"],
+            font=_FONT_HEAD,
+        )
+        style.configure(
+            "Muted.TLabel",
+            background=p["bg"],
+            foreground=p["muted"],
+            font=_FONT_SMALL,
+        )
+
+        # Buttons - clean flat style
+        style.configure(
+            "TButton",
+            background=p["bg"],
+            foreground=p["text"],
+            bordercolor=p["border"],
+            lightcolor=p["bg"],
+            darkcolor=p["bg"],
+            focuscolor=p["accent"],
+            relief="flat",
+            padding=(12, 6),
+            font=_FONT,
+        )
+        style.map(
+            "TButton",
+            background=[("active", p["hover"]), ("pressed", p["surface_alt"])],
+            bordercolor=[("active", p["accent"]), ("focus", p["accent"])],
+        )
+
+        # Toolbar button - compact, blends into toolbar
+        style.configure(
+            "Toolbar.TButton",
+            background=p["surface"],
+            foreground=p["text"],
+            bordercolor=p["surface"],
+            lightcolor=p["surface"],
+            darkcolor=p["surface"],
+            focuscolor=p["accent"],
+            relief="flat",
+            padding=(10, 5),
+            font=_FONT,
+        )
+        style.map(
+            "Toolbar.TButton",
+            background=[("active", p["hover"]), ("pressed", p["surface_alt"])],
+            bordercolor=[("active", p["accent"])],
+        )
+
+        # Icon-style compact button (used for arrows etc.)
+        style.configure(
+            "Icon.TButton",
+            background=p["surface"],
+            foreground=p["text"],
+            bordercolor=p["surface"],
+            lightcolor=p["surface"],
+            darkcolor=p["surface"],
+            relief="flat",
+            padding=(8, 5),
+            font=_FONT_SEMI,
+        )
+        style.map(
+            "Icon.TButton",
+            background=[("active", p["hover"]), ("pressed", p["surface_alt"])],
+        )
+
+        # Accent / primary button
+        style.configure(
+            "Accent.TButton",
+            background=p["accent"],
+            foreground="#ffffff",
+            bordercolor=p["accent"],
+            lightcolor=p["accent"],
+            darkcolor=p["accent"],
+            focuscolor=p["accent_active"],
+            relief="flat",
+            padding=(14, 6),
+            font=_FONT_SEMI,
+        )
+        style.map(
+            "Accent.TButton",
+            background=[("active", p["accent_hover"]), ("pressed", p["accent_active"])],
+            bordercolor=[("active", p["accent_hover"]), ("pressed", p["accent_active"])],
+            foreground=[("active", "#ffffff"), ("pressed", "#ffffff")],
+        )
+
+        # Entry
+        style.configure(
+            "TEntry",
+            fieldbackground="#ffffff",
+            background="#ffffff",
+            bordercolor=p["border"],
+            lightcolor=p["border"],
+            darkcolor=p["border"],
+            foreground=p["text"],
+            insertcolor=p["text"],
+            padding=6,
+            relief="flat",
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", p["accent"])],
+            lightcolor=[("focus", p["accent"])],
+            darkcolor=[("focus", p["accent"])],
+        )
+
+        # Treeview
+        style.configure(
+            "Treeview",
+            background="#ffffff",
+            fieldbackground="#ffffff",
+            foreground=p["text"],
+            rowheight=28,
+            borderwidth=0,
+            relief="flat",
+            font=_FONT,
+        )
+        style.configure(
+            "Treeview.Heading",
+            background=p["surface"],
+            foreground=p["muted"],
+            relief="flat",
+            font=_FONT_SEMI,
+            padding=(10, 8),
+            borderwidth=0,
+        )
+        style.map(
+            "Treeview.Heading",
+            background=[("active", p["surface_alt"])],
+            foreground=[("active", p["text"])],
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", p["selected"])],
+            foreground=[("selected", p["text"])],
+        )
+
+        # Notebook tabs
+        style.configure(
+            "TNotebook",
+            background=p["bg"],
+            borderwidth=0,
+            tabmargins=(0, 4, 0, 0),
+        )
+        style.configure(
+            "TNotebook.Tab",
+            background=p["bg"],
+            foreground=p["muted"],
+            padding=(16, 8),
+            borderwidth=0,
+            font=_FONT,
+        )
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", p["bg"]), ("active", p["surface"])],
+            foreground=[("selected", p["accent"]), ("active", p["text"])],
+            expand=[("selected", (0, 0, 0, 0))],
+        )
+
+        # Scrollbar - thinner, less obtrusive
+        style.configure(
+            "TScrollbar",
+            background=p["surface"],
+            bordercolor=p["surface"],
+            arrowcolor=p["muted"],
+            troughcolor=p["bg"],
+            relief="flat",
+            gripcount=0,
+        )
+        style.map(
+            "TScrollbar",
+            background=[("active", p["border_strong"])],
+            arrowcolor=[("active", p["text"])],
+        )
+
+        # Separator
+        style.configure("TSeparator", background=p["border"])
+
+        # Checkbutton
+        style.configure(
+            "TCheckbutton",
+            background=p["bg"],
+            foreground=p["text"],
+            font=_FONT,
+        )
+        style.map(
+            "TCheckbutton",
+            background=[("active", p["bg"])],
+        )
+
+        # Labelframe (just in case used elsewhere)
+        style.configure(
+            "TLabelframe",
+            background=p["bg"],
+            bordercolor=p["border"],
+            relief="solid",
+        )
+        style.configure(
+            "TLabelframe.Label",
+            background=p["bg"],
+            foreground=p["muted"],
+            font=_FONT_SEMI,
+        )
+
+        # Apply default font to plain tk widgets too
+        self.option_add("*Font", _FONT)
+        self.option_add("*Menu.Font", _FONT)
+        self.option_add("*TCombobox*Listbox.Font", _FONT)
+
+    def _add_tb_button(self, parent, text, command, style_name="Toolbar.TButton", pad=(0, 2)):
+        btn = ttk.Button(parent, text=text, command=command, style=style_name)
+        btn.pack(side=tk.LEFT, padx=pad[0:1] + pad[1:])
+        return btn
+
+    def _toolbar_button(self, parent, text, command, accent=False, icon=False):
+        if accent:
+            style_name = "Accent.TButton"
+        elif icon:
+            style_name = "Icon.TButton"
+        else:
+            style_name = "Toolbar.TButton"
+        btn = ttk.Button(parent, text=text, command=command, style=style_name)
+        btn.pack(side=tk.LEFT, padx=(0, 2))
+        return btn
+
+    def _toolbar_separator(self, parent):
+        wrap = ttk.Frame(parent, style="Toolbar.TFrame")
+        wrap.pack(side=tk.LEFT, padx=8, fill=tk.Y)
+        sep = ttk.Separator(wrap, orient=tk.VERTICAL)
+        sep.pack(fill=tk.Y, pady=4)
+        return sep
+
+    def focus_search(self):
+        """Move keyboard focus to the search field."""
+        if hasattr(self, "filter_entry"):
+            self.filter_entry.focus_set()
+            self.filter_entry.select_range(0, tk.END)
+
+    def _get_dot_image(self, color):
+        """Return a small filled square PhotoImage of the given color, cached."""
+        if color in self._dot_images:
+            return self._dot_images[color]
+
+        size = 10
+        img = tk.PhotoImage(width=size, height=size)
+        # Leave a 2px transparent border, fill the inner 6x6 with color.
+        for y in range(2, size - 2):
+            for x in range(2, size - 2):
+                img.put(color, (x, y))
+        self._dot_images[color] = img
+        return img
+
+    def _status_dot_for_node(self, node):
+        """Return the dot image that represents this node's state, or None."""
+        if not node.item:
+            return None
+
+        # Validation outranks edit state.
+        if any(msg.severity == "error" for msg in node.item.validation):
+            return self._get_dot_image("#dc2626")
+        if any(msg.severity == "warning" for msg in node.item.validation):
+            return self._get_dot_image("#d97706")
+
+        if node.item.state == "new":
+            return self._get_dot_image("#16a34a")
+        if node.item.state == "modified":
+            return self._get_dot_image("#2563eb")
+        if node.item.state == "deleted":
+            return self._get_dot_image("#9ca3af")
+        return None
+
+    def _auto_commit_common_fields(self, _event=None):
+        """Silently commit any changed common field edits."""
+        if not self.details_local_id or not self.model:
+            return
+        try:
+            self.apply_common_field_edits(quiet=True)
+        except Exception:
+            pass
+
+    def _auto_commit_raw_field(self, _event=None):
+        """Silently commit any changed raw field edit."""
+        if not self.details_local_id or not self.model:
+            return
+        try:
+            self.apply_raw_field_edit(quiet=True)
+        except Exception:
+            pass
+
     def create_menu(self):
+        """The menu bar is the single canonical command surface.
+
+        Every action in the app appears here. Frequent actions also have
+        keyboard shortcuts (shown next to the menu entry) and a duplicate
+        in the row right-click context menu.
+        """
         menu_bar = tk.Menu(self)
 
+        # ---- File ----
         file_menu = tk.Menu(menu_bar, tearoff=False)
-        file_menu.add_command(label="Open CSV...", command=self.open_csv_dialog)
-        file_menu.add_command(label="Open Project...", command=self.open_project_dialog)
+        file_menu.add_command(
+            label="Open CSV...",
+            command=self.open_csv_dialog,
+            accelerator="Ctrl+O",
+        )
+        file_menu.add_command(
+            label="Open Project...",
+            command=self.open_project_dialog,
+            accelerator="Ctrl+Shift+O",
+        )
         file_menu.add_separator()
-        file_menu.add_command(label="Save Project", command=self.save_project)
-        file_menu.add_command(label="Save Project As...", command=self.save_project_as)
+        file_menu.add_command(
+            label="Save Project",
+            command=self.save_project,
+            accelerator="Ctrl+S",
+        )
+        file_menu.add_command(
+            label="Save Project As...",
+            command=self.save_project_as,
+            accelerator="Ctrl+Shift+S",
+        )
         file_menu.add_separator()
-        file_menu.add_command(label="Export Azure Tree CSV...", command=self.export_azure_tree_csv_dialog)
-        file_menu.add_command(label="Export Round-Trip CSV...", command=self.export_round_trip_csv_dialog)
+        file_menu.add_command(
+            label="Export Azure Tree CSV...",
+            command=self.export_azure_tree_csv_dialog,
+        )
+        file_menu.add_command(
+            label="Export Round-Trip CSV...",
+            command=self.export_round_trip_csv_dialog,
+        )
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.destroy)
 
-        work_item_menu = tk.Menu(menu_bar, tearoff=False)
-        work_item_menu.add_command(label="Add Root", command=self.add_root_item)
-        work_item_menu.add_command(label="Add Child", command=self.add_child_item)
-        work_item_menu.add_command(label="Add Sibling", command=self.add_sibling_item)
-        work_item_menu.add_separator()
-        work_item_menu.add_command(label="Edit Title...", command=self.edit_selected_title)
-        work_item_menu.add_command(label="Delete / Restore", command=self.toggle_delete_selected)
-        work_item_menu.add_separator()
-        work_item_menu.add_command(label="Move Up", command=self.move_selected_up)
-        work_item_menu.add_command(label="Move Down", command=self.move_selected_down)
-        work_item_menu.add_command(label="Indent", command=self.indent_selected)
-        work_item_menu.add_command(label="Outdent", command=self.outdent_selected)
-        work_item_menu.add_separator()
-        work_item_menu.add_command(label="Validate", command=self.validate_model)
+        # ---- Edit (work item operations) ----
+        edit_menu = tk.Menu(menu_bar, tearoff=False)
+        edit_menu.add_command(
+            label="New Root Item",
+            command=self.add_root_item,
+            accelerator="Ctrl+N",
+        )
+        edit_menu.add_command(
+            label="New Sibling",
+            command=self.add_sibling_item,
+            accelerator="Enter",
+        )
+        edit_menu.add_command(
+            label="New Child",
+            command=self.add_child_item,
+            accelerator="Shift+Enter",
+        )
+        edit_menu.add_separator()
+        edit_menu.add_command(
+            label="Rename...",
+            command=self.edit_selected_title,
+            accelerator="F2",
+        )
+        edit_menu.add_command(
+            label="Delete / Restore",
+            command=self.toggle_delete_selected,
+            accelerator="Del",
+        )
+        edit_menu.add_separator()
+        edit_menu.add_command(
+            label="Move Up",
+            command=self.move_selected_up,
+            accelerator="Ctrl+↑",
+        )
+        edit_menu.add_command(
+            label="Move Down",
+            command=self.move_selected_down,
+            accelerator="Ctrl+↓",
+        )
+        edit_menu.add_command(
+            label="Indent",
+            command=self.indent_selected,
+            accelerator="Tab",
+        )
+        edit_menu.add_command(
+            label="Outdent",
+            command=self.outdent_selected,
+            accelerator="Shift+Tab",
+        )
+        edit_menu.add_command(
+            label="Promote to Root",
+            command=self.make_selected_root,
+        )
 
+        # ---- View ----
         view_menu = tk.Menu(menu_bar, tearoff=False)
-        view_menu.add_command(label="Expand All", command=self.expand_all)
-        view_menu.add_command(label="Collapse All", command=self.collapse_all)
+        view_menu.add_command(
+            label="Focus Search",
+            command=self.focus_search,
+            accelerator="Ctrl+F",
+        )
+        view_menu.add_command(
+            label="Clear Filter",
+            command=self.clear_filter,
+            accelerator="Esc",
+        )
+        view_menu.add_separator()
+        view_menu.add_command(
+            label="Expand All",
+            command=self.expand_all,
+        )
+        view_menu.add_command(
+            label="Collapse All",
+            command=self.collapse_all,
+        )
         view_menu.add_separator()
         view_menu.add_command(label="Columns...", command=self.show_column_chooser)
         view_menu.add_separator()
-        view_menu.add_command(label="Clear Filter", command=self.clear_filter)
+        view_menu.add_command(
+            label="Validate Now",
+            command=self.validate_model,
+        )
 
         menu_bar.add_cascade(label="File", menu=file_menu)
-        menu_bar.add_cascade(label="Work Item", menu=work_item_menu)
+        menu_bar.add_cascade(label="Edit", menu=edit_menu)
         menu_bar.add_cascade(label="View", menu=view_menu)
 
         self.config(menu=menu_bar)
@@ -136,62 +587,100 @@ class AdoWorkItemsViewer(tk.Tk):
 
             return callback
 
+        # Tree-focused shortcuts (outliner contract)
         self.tree.bind("<F2>", handled(self.edit_selected_title))
         self.tree.bind("<Delete>", handled(self.toggle_delete_selected))
+        self.tree.bind("<Return>", handled(self.add_sibling_item))
+        self.tree.bind("<Shift-Return>", handled(self.add_child_item))
+        self.tree.bind("<Tab>", handled(self.indent_selected))
+        self.tree.bind("<Shift-Tab>", handled(self.outdent_selected))
+        # Some platforms emit <Shift-Tab> as <ISO_Left_Tab>; bind both.
+        self.tree.bind("<ISO_Left_Tab>", handled(self.outdent_selected))
         self.tree.bind("<Control-Up>", handled(self.move_selected_up))
         self.tree.bind("<Control-Down>", handled(self.move_selected_down))
-        self.tree.bind("<Control-Right>", handled(self.indent_selected))
-        self.tree.bind("<Control-Left>", handled(self.outdent_selected))
+
+        # Application-wide shortcuts
         self.bind_all("<Control-s>", handled(self.save_project))
+        self.bind_all("<Control-S>", handled(self.save_project_as))
+        self.bind_all("<Control-o>", handled(self.open_csv_dialog))
+        self.bind_all("<Control-O>", handled(self.open_project_dialog))
+        self.bind_all("<Control-n>", handled(self.add_root_item))
+        self.bind_all("<Control-f>", handled(self.focus_search))
+        self.bind_all("<Escape>", handled(self.clear_filter))
 
     def create_widgets(self):
         outer = ttk.Frame(self)
         outer.pack(fill=tk.BOTH, expand=True)
 
-        top_bar = ttk.Frame(outer)
-        top_bar.pack(fill=tk.X, padx=8, pady=6)
+        # ---------- Status bar (packed first so it docks to the bottom) ----------
+        self.status_var = tk.StringVar(value="Open an Azure DevOps CSV export to begin.")
 
-        ttk.Button(top_bar, text="Open CSV...", command=self.open_csv_dialog).pack(side=tk.LEFT)
-        ttk.Button(top_bar, text="Open Project...", command=self.open_project_dialog).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Save", command=self.save_project).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Button(top_bar, text="Save As", command=self.save_project_as).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Azure CSV", command=self.export_azure_tree_csv_dialog).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Round-Trip CSV", command=self.export_round_trip_csv_dialog).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Add Root", command=self.add_root_item).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Button(top_bar, text="Add Child", command=self.add_child_item).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Add Sibling", command=self.add_sibling_item).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Delete/Restore", command=self.toggle_delete_selected).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Up", command=self.move_selected_up).pack(side=tk.LEFT, padx=(12, 0))
-        ttk.Button(top_bar, text="Down", command=self.move_selected_down).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Indent", command=self.indent_selected).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Outdent", command=self.outdent_selected).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Validate", command=self.validate_model).pack(side=tk.LEFT, padx=(12, 0))
+        status_sep = ttk.Separator(outer, orient=tk.HORIZONTAL)
+        status_sep.pack(side=tk.BOTTOM, fill=tk.X)
 
-        ttk.Label(top_bar, text="  Filter:").pack(side=tk.LEFT)
+        status_bar = ttk.Frame(outer, style="Status.TFrame")
+        status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Label(
+            status_bar,
+            textvariable=self.status_var,
+            style="Status.TLabel",
+        ).pack(side=tk.LEFT, padx=14, pady=6)
+
+        # ---------- Header strip: filename + dirty indicator + search ----------
+        header = ttk.Frame(outer, style="Toolbar.TFrame")
+        header.pack(side=tk.TOP, fill=tk.X)
+
+        header_inner = ttk.Frame(header, style="Toolbar.TFrame")
+        header_inner.pack(fill=tk.X, padx=14, pady=10)
+
+        self.file_label_var = tk.StringVar(value="No file open")
+        ttk.Label(
+            header_inner,
+            textvariable=self.file_label_var,
+            style="HeaderFile.TLabel",
+        ).pack(side=tk.LEFT)
+
+        self.dirty_indicator_var = tk.StringVar(value="")
+        ttk.Label(
+            header_inner,
+            textvariable=self.dirty_indicator_var,
+            style="Toolbar.TLabel",
+        ).pack(side=tk.LEFT, padx=(8, 0))
+
+        # Search on the right
+        search_wrap = ttk.Frame(header_inner, style="Toolbar.TFrame")
+        search_wrap.pack(side=tk.RIGHT)
+
+        ttk.Label(
+            search_wrap,
+            text="Search",
+            style="Toolbar.TLabel",
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
         self.filter_var = tk.StringVar()
-        self.filter_entry = ttk.Entry(top_bar, textvariable=self.filter_var, width=45)
-        self.filter_entry.pack(side=tk.LEFT, padx=4)
+        self.filter_entry = ttk.Entry(
+            search_wrap, textvariable=self.filter_var, width=36, font=_FONT
+        )
+        self.filter_entry.pack(side=tk.LEFT, ipady=3)
         self.filter_entry.bind("<Return>", lambda event: self.apply_filter())
+        self.filter_entry.bind("<Escape>", lambda event: self.clear_filter())
+        # Live filtering as the user types
+        self.filter_var.trace_add("write", self._on_filter_var_changed)
 
-        ttk.Button(top_bar, text="Apply", command=self.apply_filter).pack(side=tk.LEFT)
-        ttk.Button(top_bar, text="Clear", command=self.clear_filter).pack(side=tk.LEFT, padx=(4, 0))
+        ttk.Separator(outer, orient=tk.HORIZONTAL).pack(side=tk.TOP, fill=tk.X)
 
-        ttk.Button(top_bar, text="Expand All", command=self.expand_all).pack(side=tk.LEFT, padx=(16, 0))
-        ttk.Button(top_bar, text="Collapse All", command=self.collapse_all).pack(side=tk.LEFT, padx=(4, 0))
-        ttk.Button(top_bar, text="Columns...", command=self.show_column_chooser).pack(side=tk.LEFT, padx=(4, 0))
+        # ---------- Main content: tree on the left, inspector on the right ----------
+        content = ttk.Frame(outer)
+        content.pack(fill=tk.BOTH, expand=True)
 
-        self.status_var = tk.StringVar(value="Open an Azure DevOps CSV export to begin.")
-        ttk.Label(top_bar, textvariable=self.status_var).pack(side=tk.RIGHT)
-
-        paned = ttk.PanedWindow(outer, orient=tk.VERTICAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        paned = ttk.PanedWindow(content, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
 
         tree_frame = ttk.Frame(paned)
         details_frame = ttk.Frame(paned)
 
-        paned.add(tree_frame, weight=4)
-        paned.add(details_frame, weight=1)
+        paned.add(tree_frame, weight=3)
+        paned.add(details_frame, weight=2)
 
         columns = tuple(column_id for column_id, *_rest in self.tree_column_specs)
 
@@ -242,11 +731,17 @@ class AdoWorkItemsViewer(tk.Tk):
         self.tree.bind("<Button-2>", self.show_tree_context_menu)
 
         self.details_title_var = tk.StringVar(value="Details")
-        details_label = ttk.Label(details_frame, textvariable=self.details_title_var)
-        details_label.pack(anchor="w")
+        details_header = ttk.Frame(details_frame)
+        details_header.pack(fill=tk.X, pady=(8, 0))
+        details_label = ttk.Label(
+            details_header,
+            textvariable=self.details_title_var,
+            style="Heading.TLabel",
+        )
+        details_label.pack(side=tk.LEFT, anchor="w")
 
         self.details_notebook = ttk.Notebook(details_frame)
-        self.details_notebook.pack(fill=tk.BOTH, expand=True)
+        self.details_notebook.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
 
         common_tab = ttk.Frame(self.details_notebook)
         raw_tab = ttk.Frame(self.details_notebook)
@@ -257,18 +752,12 @@ class AdoWorkItemsViewer(tk.Tk):
         self.details_notebook.add(validation_tab, text="Validation")
 
         self.common_form_frame = ttk.Frame(common_tab)
-        self.common_form_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.common_form_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
 
-        common_button_bar = ttk.Frame(common_tab)
-        common_button_bar.pack(fill=tk.X, padx=8, pady=(0, 8))
-        ttk.Button(
-            common_button_bar,
-            text="Apply Common Fields",
-            command=self.apply_common_field_edits,
-        ).pack(side=tk.LEFT)
+        # Common fields commit on focus loss; no Apply button needed.
 
         raw_split = ttk.PanedWindow(raw_tab, orient=tk.HORIZONTAL)
-        raw_split.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        raw_split.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
 
         raw_list_frame = ttk.Frame(raw_split)
         raw_editor_frame = ttk.Frame(raw_split)
@@ -300,17 +789,44 @@ class AdoWorkItemsViewer(tk.Tk):
         raw_list_frame.columnconfigure(0, weight=1)
 
         self.raw_field_name_var = tk.StringVar(value="Select a field")
-        ttk.Label(raw_editor_frame, textvariable=self.raw_field_name_var).pack(anchor="w")
-        self.raw_value_text = tk.Text(raw_editor_frame, height=6, wrap=tk.WORD)
-        self.raw_value_text.pack(fill=tk.BOTH, expand=True, pady=(4, 4))
-        ttk.Button(
+        ttk.Label(
             raw_editor_frame,
-            text="Apply Raw Field",
-            command=self.apply_raw_field_edit,
-        ).pack(anchor="w")
+            textvariable=self.raw_field_name_var,
+            style="Muted.TLabel",
+        ).pack(anchor="w", padx=(12, 0))
+        self.raw_value_text = tk.Text(
+            raw_editor_frame,
+            height=6,
+            wrap=tk.WORD,
+            font=_FONT,
+            relief="flat",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightcolor=_PALETTE["accent"],
+            highlightbackground=_PALETTE["border"],
+            background="#ffffff",
+            foreground=_PALETTE["text"],
+            insertbackground=_PALETTE["text"],
+            padx=8,
+            pady=6,
+        )
+        self.raw_value_text.pack(fill=tk.BOTH, expand=True, padx=(12, 0), pady=(6, 12))
+        # Raw value commits on focus loss; no Apply button needed.
+        self.raw_value_text.bind("<FocusOut>", lambda _e: self._auto_commit_raw_field())
 
-        self.validation_text = tk.Text(validation_tab, height=8, wrap=tk.WORD)
-        self.validation_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.validation_text = tk.Text(
+            validation_tab,
+            height=8,
+            wrap=tk.WORD,
+            font=_FONT,
+            relief="flat",
+            borderwidth=0,
+            background=_PALETTE["bg"],
+            foreground=_PALETTE["text"],
+            padx=12,
+            pady=10,
+        )
+        self.validation_text.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
         self.validation_text.configure(state=tk.DISABLED)
         self.clear_details()
 
@@ -561,7 +1077,7 @@ class AdoWorkItemsViewer(tk.Tk):
 
         except CsvExportError as ex:
             messagebox.showerror(title, str(ex))
-            self.populate_tree(self.filter_var.get())
+            self.populate_tree(self._current_filter_text())
             self.update_status()
             return
 
@@ -806,7 +1322,6 @@ class AdoWorkItemsViewer(tk.Tk):
             title = node.row.get("Synthetic Title", "Group")
             values = (
                 "",
-                "",
                 node.row.get("Synthetic Type", ""),
                 "",
                 "",
@@ -821,7 +1336,6 @@ class AdoWorkItemsViewer(tk.Tk):
             title = self.model.row_title(node.row)
             values = (
                 self.model.row_id(node.row),
-                self.node_local_status(node),
                 self.model.row_type(node.row),
                 self.model.row_state(node.row),
                 self.model.row_assigned_to(node.row),
@@ -833,20 +1347,41 @@ class AdoWorkItemsViewer(tk.Tk):
                 self.model.row_tags(node.row),
             )
 
-        tree_item = self.tree.insert(
-            parent_tree_item,
-            tk.END,
+        dot_image = self._status_dot_for_node(node) if not node.synthetic else None
+
+        insert_kwargs = dict(
             text=title,
             values=values,
             tags=self.node_tags(node),
             open=self.should_open_node(node, filter_text),
+        )
+        if dot_image is not None:
+            insert_kwargs["image"] = dot_image
+
+        tree_item = self.tree.insert(
+            parent_tree_item,
+            tk.END,
+            **insert_kwargs,
         )
 
         self.tree_item_to_node[tree_item] = node
         return tree_item
 
     def apply_filter(self):
-        self.populate_tree(self.filter_var.get())
+        self.populate_tree(self._current_filter_text())
+
+    def _on_filter_var_changed(self, *_args):
+        """Live filter; debounced so we don't repopulate on every keystroke."""
+        if getattr(self, "_filter_after_id", None):
+            try:
+                self.after_cancel(self._filter_after_id)
+            except Exception:
+                pass
+
+        self._filter_after_id = self.after(180, self.apply_filter)
+
+    def _current_filter_text(self):
+        return self.filter_var.get()
 
     def clear_filter(self):
         self.filter_var.set("")
@@ -923,23 +1458,23 @@ class AdoWorkItemsViewer(tk.Tk):
         state_for_url = tk.NORMAL if has_url else tk.DISABLED
 
         menu.add_command(
-            label="Add Root",
+            label="New Root Item",
             command=self.add_root_item,
             state=state_for_add_root,
         )
         menu.add_command(
-            label="Add Child",
-            command=self.add_child_item,
+            label="New Sibling",
+            command=self.add_sibling_item,
             state=state_for_real,
         )
         menu.add_command(
-            label="Add Sibling",
-            command=self.add_sibling_item,
+            label="New Child",
+            command=self.add_child_item,
             state=state_for_real,
         )
         menu.add_separator()
         menu.add_command(
-            label="Edit Title...",
+            label="Rename...",
             command=self.edit_selected_title,
             state=state_for_real,
         )
@@ -1069,16 +1604,23 @@ class AdoWorkItemsViewer(tk.Tk):
         self.common_field_vars = []
 
         for row_index, (label, field_name, value) in enumerate(self.common_field_definitions(node)):
-            ttk.Label(self.common_form_frame, text=label).grid(
+            ttk.Label(
+                self.common_form_frame,
+                text=label,
+                style="Muted.TLabel",
+            ).grid(
                 row=row_index,
                 column=0,
                 sticky="w",
-                padx=(0, 8),
-                pady=2,
+                padx=(0, 12),
+                pady=4,
             )
             var = tk.StringVar(value=value)
-            entry = ttk.Entry(self.common_form_frame, textvariable=var, width=80)
-            entry.grid(row=row_index, column=1, sticky="ew", pady=2)
+            entry = ttk.Entry(self.common_form_frame, textvariable=var, width=40)
+            entry.grid(row=row_index, column=1, sticky="ew", pady=4)
+            # Commit silently when focus leaves the field.
+            entry.bind("<FocusOut>", self._auto_commit_common_fields)
+            entry.bind("<Return>", self._auto_commit_common_fields)
             self.common_field_vars.append((field_name, var))
 
         self.common_form_frame.columnconfigure(1, weight=1)
@@ -1154,15 +1696,20 @@ class AdoWorkItemsViewer(tk.Tk):
 
         return False
 
-    def apply_common_field_edits(self):
+    def apply_common_field_edits(self, quiet=False):
         if not self.details_local_id or not self.model:
-            messagebox.showinfo("Apply Common Fields", "Select a work item first.")
+            if not quiet:
+                messagebox.showinfo("Apply Common Fields", "Select a work item first.")
             return
 
         node = self.model.get_node(self.details_local_id)
 
         if not node or not node.item:
-            messagebox.showinfo("Apply Common Fields", "The selected work item is no longer available.")
+            if not quiet:
+                messagebox.showinfo(
+                    "Apply Common Fields",
+                    "The selected work item is no longer available.",
+                )
             return
 
         changed = False
@@ -1184,18 +1731,20 @@ class AdoWorkItemsViewer(tk.Tk):
 
         if changed:
             self.refresh_after_model_change(node.item.local_id)
-        else:
+        elif not quiet:
             self.status_var.set("No common field changes to apply.")
 
-    def apply_raw_field_edit(self):
+    def apply_raw_field_edit(self, quiet=False):
         if not self.details_local_id or not self.model:
-            messagebox.showinfo("Apply Raw Field", "Select a work item first.")
+            if not quiet:
+                messagebox.showinfo("Apply Raw Field", "Select a work item first.")
             return
 
         selection = self.raw_fields_tree.selection()
 
         if not selection:
-            messagebox.showinfo("Apply Raw Field", "Select a raw field first.")
+            if not quiet:
+                messagebox.showinfo("Apply Raw Field", "Select a raw field first.")
             return
 
         field_name = self.raw_field_items.get(selection[0])
@@ -1206,13 +1755,18 @@ class AdoWorkItemsViewer(tk.Tk):
         node = self.model.get_node(self.details_local_id)
 
         if not node or not node.item:
-            messagebox.showinfo("Apply Raw Field", "The selected work item is no longer available.")
+            if not quiet:
+                messagebox.showinfo(
+                    "Apply Raw Field",
+                    "The selected work item is no longer available.",
+                )
             return
 
         value = self.raw_value_text.get("1.0", "end-1c")
 
         if value == str(node.item.fields.get(field_name, "")):
-            self.status_var.set("No raw field changes to apply.")
+            if not quiet:
+                self.status_var.set("No raw field changes to apply.")
             return
 
         self.model.edit_field(node.item.local_id, field_name, value)
@@ -1467,7 +2021,7 @@ class AdoWorkItemsViewer(tk.Tk):
             return
 
         messages = self.model.validate()
-        self.populate_tree(self.filter_var.get())
+        self.populate_tree(self._current_filter_text())
         self.update_status()
 
         errors = [msg for msg in messages if msg.severity == "error"]
@@ -1487,7 +2041,7 @@ class AdoWorkItemsViewer(tk.Tk):
             return
 
         self.model.validate()
-        self.populate_tree(self.filter_var.get(), select_local_id=select_local_id)
+        self.populate_tree(self._current_filter_text(), select_local_id=select_local_id)
         self.update_status()
 
     def node_local_status(self, node):
@@ -1507,6 +2061,13 @@ class AdoWorkItemsViewer(tk.Tk):
         return ", ".join(status_parts)
 
     def node_tags(self, node):
+        """Row-level tags.
+
+        The colored status dot already encodes new/modified/deleted state, so
+        the row text doesn't need to be colored too — that would double-encode.
+        Only deleted items get a muted strike feel, and validation errors get
+        a subtle row tint so problems stand out at a glance.
+        """
         if not node.item:
             return ()
 
@@ -1516,12 +2077,6 @@ class AdoWorkItemsViewer(tk.Tk):
         if any(msg.severity == "warning" for msg in node.item.validation):
             return ("validation_warning",)
 
-        if node.item.state == "new":
-            return ("new",)
-
-        if node.item.state == "modified":
-            return ("modified",)
-
         if node.item.state == "deleted":
             return ("deleted",)
 
@@ -1530,6 +2085,10 @@ class AdoWorkItemsViewer(tk.Tk):
     def update_status(self):
         if not self.model:
             self.status_var.set("Open an Azure DevOps CSV export to begin.")
+            if hasattr(self, "file_label_var"):
+                self.file_label_var.set("No file open")
+            if hasattr(self, "dirty_indicator_var"):
+                self.dirty_indicator_var.set("")
             return
 
         source = os.path.basename(self.current_path) if self.current_path else "Untitled"
@@ -1539,11 +2098,29 @@ class AdoWorkItemsViewer(tk.Tk):
         warnings = sum(1 for msg in self.model.validation_messages if msg.severity == "warning")
         dirty = counts["new"] + counts["modified"] + counts["deleted"]
 
-        self.status_var.set(
-            f"{source} - {item_count} items - "
-            f"{dirty} dirty ({counts['new']} new, {counts['modified']} modified, {counts['deleted']} deleted) - "
-            f"{errors} errors, {warnings} warnings"
-        )
+        # Header strip: filename + a small dot when there are unsaved changes
+        if hasattr(self, "file_label_var"):
+            self.file_label_var.set(source)
+        if hasattr(self, "dirty_indicator_var"):
+            self.dirty_indicator_var.set("•  unsaved" if dirty else "")
+
+        # Status bar: compact summary
+        parts = [f"{item_count} items"]
+        if dirty:
+            parts.append(
+                f"{dirty} unsaved  ({counts['new']} new · {counts['modified']} modified · {counts['deleted']} deleted)"
+            )
+        if errors or warnings:
+            issue_bits = []
+            if errors:
+                issue_bits.append(f"{errors} error{'s' if errors != 1 else ''}")
+            if warnings:
+                issue_bits.append(f"{warnings} warning{'s' if warnings != 1 else ''}")
+            parts.append(" · ".join(issue_bits))
+        else:
+            parts.append("no issues")
+
+        self.status_var.set("    ·    ".join(parts))
 
     def open_selected_url(self):
         node = self.selected_real_node("Open URL")
