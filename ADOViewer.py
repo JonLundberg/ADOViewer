@@ -35,7 +35,12 @@ from adoviewer.csv_io import (
 )
 from adoviewer.ado_client import AdoClient, AdoClientError, AdoConnectionSettings
 from adoviewer.project_io import load_project_file, save_project_file
-from adoviewer.publish import build_field_map, build_publish_plan, run_dry_run
+from adoviewer.publish import (
+    build_field_map,
+    build_publish_plan,
+    run_dry_run,
+    run_live_publish,
+)
 from adoviewer.tree_model import WorkItemModel
 
 _ADO_SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".adoviewer_connection.json")
@@ -600,6 +605,10 @@ class AdoWorkItemsViewer(tk.Tk):
         ado_menu.add_command(
             label="Dry Run (Validate Only)...",
             command=self.run_publish_dry_run,
+        )
+        ado_menu.add_command(
+            label="Publish to Azure DevOps...",
+            command=self.run_live_publish,
         )
         ado_menu.add_separator()
         ado_menu.add_command(
@@ -2534,6 +2543,123 @@ class AdoWorkItemsViewer(tk.Tk):
             side="right", padx=16, pady=(0, 14)
         )
         self.wait_window(dialog)
+
+    def run_live_publish(self) -> None:
+        """Confirm, then publish dirty items to Azure DevOps live."""
+        plan = self._build_plan_or_warn()
+        if not plan:
+            return
+
+        creates = len(plan.creates)
+        updates = len(plan.updates)
+        reparents = len(plan.reparents)
+        warning_text = "\n".join(f"  * {w}" for w in plan.warnings) or "  (none)"
+        confirm = messagebox.askyesno(
+            "Publish to Azure DevOps",
+            f"This will make live changes to Azure DevOps.\n\n"
+            f"  Creates:   {creates}\n"
+            f"  Updates:   {updates}\n"
+            f"  Reparents: {reparents}\n\n"
+            f"Warnings:\n{warning_text}\n\nContinue?",
+        )
+        if not confirm:
+            return
+
+        client = self._require_client()
+        if not client:
+            return
+
+        field_metadata = None
+        try:
+            field_metadata = client.get_fields()
+        except AdoClientError:
+            pass
+
+        fm = build_field_map(field_metadata)
+
+        # Progress log dialog
+        progress_dialog = tk.Toplevel(self)
+        progress_dialog.title("Publishing to Azure DevOps...")
+        progress_dialog.geometry("680x400")
+        progress_dialog.configure(background=_PALETTE["bg"])
+
+        prog_txt = tk.Text(
+            progress_dialog,
+            wrap="word",
+            font=_FONT_SMALL,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            state="normal",
+        )
+        prog_txt.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def _log(msg: str) -> None:
+            prog_txt.insert("end", msg + "\n")
+            prog_txt.see("end")
+            progress_dialog.update_idletasks()
+
+        _log("Starting publish...")
+
+        try:
+            report = run_live_publish(
+                plan,
+                client,
+                model=self.model,
+                field_map=fm,
+                on_progress=_log,
+            )
+        except Exception as exc:
+            progress_dialog.destroy()
+            messagebox.showerror("Publish Error", f"Unexpected error:\n{exc}")
+            return
+
+        progress_dialog.destroy()
+
+        # Show publish report dialog
+        report_dialog = tk.Toplevel(self)
+        report_dialog.title("Publish Report")
+        report_dialog.geometry("680x500")
+        report_dialog.configure(background=_PALETTE["bg"])
+        report_dialog.grab_set()
+
+        ttk.Label(
+            report_dialog,
+            text=report.summary(),
+            style="Heading.TLabel",
+        ).pack(anchor="w", padx=16, pady=(14, 4))
+        ttk.Separator(report_dialog, orient="horizontal").pack(fill="x", padx=16)
+
+        text_frame = ttk.Frame(report_dialog)
+        text_frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        sb = ttk.Scrollbar(text_frame, orient="vertical")
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(
+            text_frame,
+            wrap="word",
+            font=_FONT,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            yscrollcommand=sb.set,
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        for line in report.summary_lines():
+            txt.insert("end", line + "\n")
+        txt.config(state="disabled")
+
+        ttk.Button(report_dialog, text="Close", command=report_dialog.destroy).pack(
+            side="right", padx=16, pady=(0, 14)
+        )
+
+        # Refresh tree to reflect updated IDs and dirty state.
+        self.refresh_after_model_change(None)
+        self.update_status()
+
+        self.wait_window(report_dialog)
 
 
 # ----------------------------

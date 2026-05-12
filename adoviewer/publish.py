@@ -491,43 +491,25 @@ def run_dry_run(
 
     No work items are created or modified. Server-side validation errors
     are captured and returned per operation.
-
-    Parameters
-    ----------
-    plan:
-        The publish plan to validate.
-    client:
-        An authenticated AdoClient.
-    field_map:
-        Optional resolved display_name -> reference_name map.
-        Falls back to the built-in map when not provided.
     """
     from adoviewer.ado_client import AdoClientError
 
     fm = field_map or build_field_map(None)
-    settings = client._settings
-    org_url = settings.org_url
-    project = settings.project
+    org_url = client._settings.org_url
     results: list[DryRunResult] = []
 
     for op in plan.operations:
         if op.op_type == "reparent":
-            # Reparent requires knowledge of existing relations; skip in dry run.
-            results.append(DryRunResult(op=op, success=True, error=None, server_messages=["Reparent dry run skipped."]))
+            results.append(DryRunResult(op=op, success=True, server_messages=["Reparent dry run skipped."]))
             continue
 
         try:
             if op.op_type == "create":
                 patch = build_create_patch(op, fm, org_url=org_url)
-                import urllib.parse
-                wi_type = urllib.parse.quote(op.work_item_type)
-                path = f"{org_url}/{urllib.parse.quote(project)}/_apis/wit/workitems/${wi_type}"
-                client._patch_json_patch(path, patch, validateOnly="true")
+                client.create_work_item(op.work_item_type, patch, validate_only=True)
             else:
                 patch = build_update_patch(op, fm)
-                import urllib.parse
-                path = f"{org_url}/{urllib.parse.quote(project)}/_apis/wit/workitems/{op.remote_id}"
-                client._patch_json_patch(path, patch, validateOnly="true")
+                client.update_work_item(op.remote_id, patch, validate_only=True)
 
             results.append(DryRunResult(op=op, success=True))
 
@@ -537,3 +519,291 @@ def run_dry_run(
             results.append(DryRunResult(op=op, success=False, error=f"Unexpected error: {exc}"))
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Live publish
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PublishReportEntry:
+    """Result of a single publish operation."""
+
+    op: PublishOperation
+    success: bool
+    azure_id: int | None = None
+    azure_rev: int | None = None
+    error: str | None = None
+
+
+@dataclass
+class PublishReport:
+    """Complete result of a live publish run."""
+
+    entries: list[PublishReportEntry] = field(default_factory=list)
+
+    @property
+    def successes(self) -> list[PublishReportEntry]:
+        return [e for e in self.entries if e.success]
+
+    @property
+    def failures(self) -> list[PublishReportEntry]:
+        return [e for e in self.entries if not e.success]
+
+    @property
+    def creates(self) -> list[PublishReportEntry]:
+        return [e for e in self.entries if e.op.op_type == "create"]
+
+    @property
+    def updates(self) -> list[PublishReportEntry]:
+        return [e for e in self.entries if e.op.op_type == "update"]
+
+    @property
+    def reparents(self) -> list[PublishReportEntry]:
+        return [e for e in self.entries if e.op.op_type == "reparent"]
+
+    def summary(self) -> str:
+        ok = len(self.successes)
+        fail = len(self.failures)
+        return f"Published: {ok} succeeded, {fail} failed."
+
+    def summary_lines(self) -> list[str]:
+        lines = [self.summary(), ""]
+        for e in self.entries:
+            status = "OK" if e.success else "FAIL"
+            azure = f"  Azure ID={e.azure_id}" if e.azure_id is not None else ""
+            lines.append(f"[{status}] {e.op.op_type.upper()} {e.op.title[:60]!r}{azure}")
+            if e.error:
+                lines.append(f"       Error: {e.error}")
+        return lines
+
+
+def _find_parent_relation_index(wi_data: dict[str, Any]) -> int | None:
+    """Find the index of the existing parent (Hierarchy-Reverse) relation."""
+    relations = wi_data.get("relations") or []
+    for idx, rel in enumerate(relations):
+        if rel.get("rel") == "System.LinkTypes.Hierarchy-Reverse":
+            return idx
+    return None
+
+
+def run_live_publish(
+    plan: PublishPlan,
+    client: AdoClient,
+    model: WorkItemModel | None = None,
+    field_map: dict[str, str] | None = None,
+    on_progress: Any | None = None,
+) -> PublishReport:
+    """Execute the publish plan against Azure DevOps.
+
+    Creates are processed level-by-level so parent remote IDs are always
+    known before their children are created. If a create fails at depth N,
+    deeper levels (N+1, N+2, …) are skipped so orphaned children are not
+    created. Updates and reparents run after all creates.
+
+    Parameters
+    ----------
+    plan:
+        The publish plan produced by ``build_publish_plan``.
+    client:
+        An authenticated AdoClient.
+    model:
+        Optional WorkItemModel. When provided, remote IDs and revisions are
+        written back to the model's WorkItem objects after successful creates.
+    field_map:
+        Optional resolved display_name -> reference_name map.
+    on_progress:
+        Optional callable(message: str) called after each operation for
+        progress feedback in the UI.
+    """
+    from adoviewer.ado_client import AdoClientError
+
+    fm = field_map or build_field_map(None)
+    org_url = client._settings.org_url
+    report = PublishReport()
+
+    # Build initial local_id -> remote_id map from already-existing items.
+    id_map: dict[str, int] = {}
+    if model:
+        for item in model.flatten(include_deleted=True):
+            if item.remote_id is not None:
+                id_map[item.local_id] = item.remote_id
+
+    # ---- Depth-ordered creates ----
+    depth_to_ops = plan.creates_by_depth()
+    stop_creates = False
+
+    for depth in sorted(depth_to_ops.keys()):
+        if stop_creates:
+            # Record all remaining creates as skipped due to prior failure.
+            for op in depth_to_ops[depth]:
+                report.entries.append(
+                    PublishReportEntry(
+                        op=op,
+                        success=False,
+                        error="Skipped: a parent level failed; cannot create children without valid parent IDs.",
+                    )
+                )
+            continue
+
+        level_had_failure = False
+
+        for op in depth_to_ops[depth]:
+            _notify(on_progress, f"Creating: {op.work_item_type} '{op.title[:50]}'")
+
+            # Re-resolve parent_remote_id using latest id_map in case it was
+            # just assigned to a sibling's parent in a prior depth iteration.
+            parent_remote_id = op.parent_remote_id
+            if op.parent_local_id and op.parent_local_id in id_map:
+                parent_remote_id = id_map[op.parent_local_id]
+
+            # Build an updated PublishOperation with the resolved parent ID.
+            resolved_op = PublishOperation(
+                op_type=op.op_type,
+                local_id=op.local_id,
+                remote_id=op.remote_id,
+                title=op.title,
+                work_item_type=op.work_item_type,
+                depth=op.depth,
+                parent_remote_id=parent_remote_id,
+                parent_local_id=op.parent_local_id,
+                fields_to_send=op.fields_to_send,
+                fields_excluded=op.fields_excluded,
+                rev=op.rev,
+            )
+
+            try:
+                patch = build_create_patch(resolved_op, fm, org_url=org_url)
+                result = client.create_work_item(op.work_item_type, patch)
+                azure_id = result.get("id")
+                azure_rev = result.get("rev")
+
+                # Update id_map so children at the next depth can reference this ID.
+                if azure_id is not None:
+                    id_map[op.local_id] = int(azure_id)
+
+                # Write back to the model if available.
+                if model and azure_id is not None:
+                    node = model.get_node(op.local_id)
+                    if node and node.item:
+                        node.item.remote_id = int(azure_id)
+                        node.item.rev = int(azure_rev) if azure_rev is not None else None
+                        node.item.state = "unchanged"
+
+                report.entries.append(
+                    PublishReportEntry(
+                        op=op,
+                        success=True,
+                        azure_id=int(azure_id) if azure_id is not None else None,
+                        azure_rev=int(azure_rev) if azure_rev is not None else None,
+                    )
+                )
+
+            except AdoClientError as exc:
+                level_had_failure = True
+                report.entries.append(PublishReportEntry(op=op, success=False, error=str(exc)))
+            except Exception as exc:
+                level_had_failure = True
+                report.entries.append(PublishReportEntry(op=op, success=False, error=f"Unexpected error: {exc}"))
+
+        if level_had_failure:
+            stop_creates = True
+            _notify(on_progress, f"Depth {depth} had failures; deeper creates are skipped.")
+
+    # ---- Updates ----
+    for op in plan.updates:
+        _notify(on_progress, f"Updating: {op.work_item_type} ID={op.remote_id} '{op.title[:50]}'")
+        try:
+            patch = build_update_patch(op, fm)
+            result = client.update_work_item(op.remote_id, patch)
+            azure_rev = result.get("rev")
+
+            if model:
+                node = model.get_node(op.local_id)
+                if node and node.item:
+                    node.item.rev = int(azure_rev) if azure_rev is not None else node.item.rev
+                    node.item.state = "unchanged"
+
+            report.entries.append(
+                PublishReportEntry(
+                    op=op,
+                    success=True,
+                    azure_id=op.remote_id,
+                    azure_rev=int(azure_rev) if azure_rev is not None else None,
+                )
+            )
+
+        except AdoClientError as exc:
+            report.entries.append(PublishReportEntry(op=op, success=False, error=str(exc)))
+        except Exception as exc:
+            report.entries.append(PublishReportEntry(op=op, success=False, error=f"Unexpected error: {exc}"))
+
+    # ---- Reparents ----
+    for op in plan.reparents:
+        _notify(on_progress, f"Reparenting: {op.work_item_type} ID={op.remote_id} '{op.title[:50]}'")
+        try:
+            # Fetch current relations to find the existing parent index.
+            wi_data = client.get_work_item(op.remote_id, expand="Relations")
+            old_idx = _find_parent_relation_index(wi_data)
+
+            reparent_patch: list[dict[str, Any]] = []
+
+            # Remove old parent relation before adding the new one.
+            if old_idx is not None:
+                reparent_patch.append({"op": "remove", "path": f"/relations/{old_idx}"})
+
+            # Add new parent relation if a new parent remote ID is known.
+            new_parent_id = op.parent_remote_id
+            if op.parent_local_id and op.parent_local_id in id_map:
+                new_parent_id = id_map[op.parent_local_id]
+
+            if new_parent_id is not None:
+                reparent_patch.append(
+                    {
+                        "op": "add",
+                        "path": "/relations/-",
+                        "value": {
+                            "rel": "System.LinkTypes.Hierarchy-Reverse",
+                            "url": f"{org_url}/_apis/wit/workItems/{new_parent_id}",
+                            "attributes": {"comment": "Reparented by ADOViewer"},
+                        },
+                    }
+                )
+
+            # Also update fields that may have changed.
+            field_patch = build_update_patch(op, fm)
+            full_patch = field_patch + reparent_patch
+
+            result = client.update_work_item(op.remote_id, full_patch)
+            azure_rev = result.get("rev")
+
+            if model:
+                node = model.get_node(op.local_id)
+                if node and node.item:
+                    node.item.rev = int(azure_rev) if azure_rev is not None else node.item.rev
+                    node.item.original_parent_local_id = node.item.parent_local_id
+                    node.item.state = "unchanged"
+
+            report.entries.append(
+                PublishReportEntry(
+                    op=op,
+                    success=True,
+                    azure_id=op.remote_id,
+                    azure_rev=int(azure_rev) if azure_rev is not None else None,
+                )
+            )
+
+        except AdoClientError as exc:
+            report.entries.append(PublishReportEntry(op=op, success=False, error=str(exc)))
+        except Exception as exc:
+            report.entries.append(PublishReportEntry(op=op, success=False, error=f"Unexpected error: {exc}"))
+
+    return report
+
+
+def _notify(callback: Any | None, message: str) -> None:
+    if callback is not None:
+        try:
+            callback(message)
+        except Exception:
+            pass

@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 7 - Live Publish**.
+Current position in the plan: **Milestone 8 - Packaging**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -96,17 +96,25 @@ Milestone 6 is complete:
 - `tests/test_publish.py` covers 32 cases: field map building, field resolution, plan ordering, create depth, parent remote ID propagation, update/reparent classification, rev handling, system-managed field exclusion, patch body construction, parent relation shape, dry-run URL params and Content-Type, and `PublishPlan.summary_lines()`.
 - All 91 tests pass.
 
+Milestone 7 is complete:
+
+- `adoviewer/ado_client.py` gains three new public methods: `create_work_item(wi_type, patch, validate_only)`, `update_work_item(remote_id, patch, validate_only)`, and `get_work_item(remote_id, expand)`.
+- `adoviewer/publish.py` gains `PublishReportEntry`, `PublishReport`, and `run_live_publish`.
+- `run_live_publish` executes the publish plan level-by-level: creates are sorted by depth and grouped per level; when a level fails, all deeper levels are skipped so orphaned children are never created. After each successful create, the returned Azure ID is added to a local_id -> remote_id map so the next level can resolve parent IDs immediately without a separate batch-get round trip. Updates run after all creates, followed by reparents (which fetch current relations first, remove the old parent, and add the new one). All operations write back Azure IDs, revisions, and updated state to the model when a model is provided.
+- `PublishReport` provides `successes`, `failures`, `creates`, `updates`, `reparents` properties and `summary_lines()` for the result dialog.
+- The Azure DevOps menu gains a "Publish to Azure DevOps..." command that prompts for confirmation with create/update/reparent counts, shows a live progress log dialog, runs `run_live_publish`, and displays a publish report dialog.
+- `tests/test_live_publish.py` covers 23 cases: create_work_item URL/method/Content-Type, update_work_item URL/method, get_work_item URL/method, live creates and model writeback, depth ordering, parent ID propagation to child patches, failure cascades (depth N failure skips N+1, only one HTTP call when root fails), update flow, state writeback, PublishReport properties, and on_progress callback.
+- All 114 tests pass.
+
 ## Next Planned Work
 
-Next position in the plan: **Milestone 7 - Live Publish**.
+Next position in the plan: **Milestone 8 - Packaging**.
 
 Expected next work:
 
-- Implement live creates by level.
-- Capture returned IDs and revisions.
-- Batch get created/updated Work Items and verify links.
-- Implement field updates for existing items.
-- Implement reparent for existing items.
-- Write publish report.
-- Save local ID to remote ID mappings after each successful level.
-- Add retry from report.
+- Add `README.md`.
+- Add `requirements-dev.txt`.
+- Add optional `requirements.txt` if REST dependencies are used.
+- Add PyInstaller config or documented build command.
+- Add app icon if desired.
+- Add sample files.

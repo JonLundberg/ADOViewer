@@ -140,6 +140,59 @@ class AdoClient:
             results.extend(data.get("value", []))
         return results
 
+    def create_work_item(
+        self,
+        work_item_type: str,
+        patch: list[dict[str, Any]],
+        validate_only: bool = False,
+    ) -> dict[str, Any]:
+        """Create a new work item via JSON Patch.
+
+        Returns the created work item dict including ``id`` and ``rev``.
+        """
+        path = (
+            f"{self._settings.org_url}/{urllib.parse.quote(self._settings.project)}"
+            f"/_apis/wit/workitems/${urllib.parse.quote(work_item_type)}"
+        )
+        extra: dict[str, str] = {}
+        if validate_only:
+            extra["validateOnly"] = "true"
+        return self._patch_json_patch(path, patch, **extra)
+
+    def update_work_item(
+        self,
+        remote_id: int,
+        patch: list[dict[str, Any]],
+        validate_only: bool = False,
+    ) -> dict[str, Any]:
+        """Update an existing work item via JSON Patch.
+
+        Returns the updated work item dict including ``id`` and ``rev``.
+        """
+        path = (
+            f"{self._settings.org_url}/{urllib.parse.quote(self._settings.project)}"
+            f"/_apis/wit/workitems/{remote_id}"
+        )
+        extra: dict[str, str] = {}
+        if validate_only:
+            extra["validateOnly"] = "true"
+        return self._patch_json_patch(path, patch, **extra)
+
+    def get_work_item(
+        self,
+        remote_id: int,
+        expand: str | None = "Relations",
+    ) -> dict[str, Any]:
+        """Fetch a single work item by remote ID."""
+        path = (
+            f"{self._settings.org_url}/{urllib.parse.quote(self._settings.project)}"
+            f"/_apis/wit/workitems/{remote_id}"
+        )
+        extra: dict[str, str] = {}
+        if expand:
+            extra["$expand"] = expand
+        return self._get(path, **extra)
+
     # ------------------------------------------------------------------
     # Low-level helpers
     # ------------------------------------------------------------------
