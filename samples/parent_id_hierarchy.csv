@@ -1,0 +1,10 @@
+ID,Work Item Type,Title,State,Assigned To,Tags,Area Path,Iteration Path,Parent ID,Effort,Priority
+201,Epic,Customer Portal Redesign,Active,Jane Smith,redesign,MyProject\Web,MyProject\2024\Q1,,0,1
+202,Feature,Login and Authentication,Active,Bob Jones,auth,MyProject\Web,MyProject\2024\Q1,201,8,1
+203,Feature,Dashboard and Reporting,New,,,MyProject\Web,MyProject\2024\Q1,201,13,2
+204,User Story,User can log in with email and password,Active,Bob Jones,,MyProject\Web,MyProject\2024\Q1,202,3,1
+205,User Story,User can reset forgotten password,New,,,MyProject\Web,MyProject\2024\Q1,202,2,2
+206,User Story,User sees summary dashboard on login,New,,,MyProject\Web,MyProject\2024\Q1,203,5,2
+207,Task,Create login API endpoint,Active,Bob Jones,,MyProject\Web,MyProject\2024\Q1,204,1,1
+208,Task,Implement password hash and salt,New,,,MyProject\Web,MyProject\2024\Q1,204,1,1
+209,Bug,Login fails with special characters in password,Active,Bob Jones,bug,MyProject\Web,MyProject\2024\Q1,202,0,1

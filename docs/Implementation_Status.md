@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 5 - Azure DevOps Metadata and Client**.
+Current position in the plan: **All milestones complete**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -64,16 +64,65 @@ Milestone 4 is complete:
 - Preview saving writes the same generated rows shown in the dialog.
 - CSV rendering tests cover quoting for commas, quotes, and newlines.
 
-## Next Planned Work
+Milestone 5 is complete:
 
-Next position in the plan: **Milestone 5 - Azure DevOps Metadata and Client**.
+- `adoviewer/ado_client.py` implements `AdoConnectionSettings`, `AdoClientError`, and `AdoClient`.
+- `AdoClient` uses urllib (stdlib only) with a pluggable transport so tests never hit the network.
+- Auth is formed as Basic base64(":{pat}") at construction time; the raw PAT is discarded and never stored or logged.
+- `test_connection()` fetches the Azure DevOps project record to verify org URL and project.
+- `get_relation_types()`, `get_work_item_types()`, and `get_fields()` retrieve metadata from the REST API.
+- `batch_get_work_items(ids)` chunks requests into groups of 200 (the Azure API limit) and flattens results.
+- 401, 403, 404, and 5xx HTTP errors are converted to `AdoClientError` with safe, token-free messages.
+- Connection settings (org URL and project only, never PAT) are persisted to `~/.adoviewer_connection.json`.
+- PAT is prompted via a masked dialog each session and kept only in memory.
+- The UI has a new "Azure DevOps" menu with: Connection Settings, Test Connection, Fetch Work Item Types, and Fetch Fields commands.
+- `tests/test_ado_client.py` covers 27 cases: auth header encoding, URL construction, HTTP methods, Content-Type, batch chunking, error codes, PAT not in error messages, return value shapes, and the `_chunks` utility.
+- All 59 tests pass.
 
-Expected next work:
+Milestone 6 is complete:
 
-- Add connection settings dialog.
-- Add PAT handling.
-- Implement REST client with timeouts and safe error messages.
-- Implement get relation types.
-- Implement get work item types/fields.
-- Implement batch get work items.
-- Add fake client tests.
+- `adoviewer/publish.py` implements the publish plan builder and dry-run executor.
+- `SYSTEM_MANAGED_DISPLAY_NAMES` lists all CSV column names excluded from REST payloads (ID, Rev, date fields, user fields, Title N hierarchy columns, ADOViewer-internal keys).
+- `KNOWN_FIELD_MAP` maps common Azure DevOps display names to REST reference names as a fallback when live field metadata has not been fetched.
+- `build_field_map(field_metadata)` merges live field metadata on top of the built-in map.
+- `resolve_fields(item_fields, field_map)` splits item fields into (to_send, excluded) with a reason for each exclusion.
+- `PublishOperation` records op type, local/remote IDs, depth, parent remote ID, fields to send, and exclusions.
+- `PublishPlan` provides `creates`, `updates`, `reparents` properties and `creates_by_depth()` for level-order execution.
+- `build_publish_plan(model, field_metadata)` collects dirty items, orders creates by depth, generates update and reparent operations for modified items, and adds warnings for deleted existing items and caution fields.
+- `build_create_patch(op, field_map, org_url)` builds a JSON Patch body for creates, including the `System.LinkTypes.Hierarchy-Reverse` parent relation when the parent remote ID is known.
+- `build_update_patch(op, field_map)` builds a JSON Patch body for updates, including a `test /rev` operation when the revision is known for optimistic concurrency.
+- `run_dry_run(plan, client, field_map)` sends each create/update with `validateOnly=true`; reparents are noted as skipped.
+- The "Azure DevOps" menu now has "Publish Preview" (offline summary dialog) and "Dry Run (Validate Only)" (sends validateOnly requests and shows per-operation pass/fail).
+- `tests/test_publish.py` covers 32 cases: field map building, field resolution, plan ordering, create depth, parent remote ID propagation, update/reparent classification, rev handling, system-managed field exclusion, patch body construction, parent relation shape, dry-run URL params and Content-Type, and `PublishPlan.summary_lines()`.
+- All 91 tests pass.
+
+Milestone 7 is complete:
+
+- `adoviewer/ado_client.py` gains three new public methods: `create_work_item(wi_type, patch, validate_only)`, `update_work_item(remote_id, patch, validate_only)`, and `get_work_item(remote_id, expand)`.
+- `adoviewer/publish.py` gains `PublishReportEntry`, `PublishReport`, and `run_live_publish`.
+- `run_live_publish` executes the publish plan level-by-level: creates are sorted by depth and grouped per level; when a level fails, all deeper levels are skipped so orphaned children are never created. After each successful create, the returned Azure ID is added to a local_id -> remote_id map so the next level can resolve parent IDs immediately without a separate batch-get round trip. Updates run after all creates, followed by reparents (which fetch current relations first, remove the old parent, and add the new one). All operations write back Azure IDs, revisions, and updated state to the model when a model is provided.
+- `PublishReport` provides `successes`, `failures`, `creates`, `updates`, `reparents` properties and `summary_lines()` for the result dialog.
+- The Azure DevOps menu gains a "Publish to Azure DevOps..." command that prompts for confirmation with create/update/reparent counts, shows a live progress log dialog, runs `run_live_publish`, and displays a publish report dialog.
+- `tests/test_live_publish.py` covers 23 cases: create_work_item URL/method/Content-Type, update_work_item URL/method, get_work_item URL/method, live creates and model writeback, depth ordering, parent ID propagation to child patches, failure cascades (depth N failure skips N+1, only one HTTP call when root fails), update flow, state writeback, PublishReport properties, and on_progress callback.
+- All 114 tests pass.
+
+Milestone 8 is complete:
+
+- `README.md` documents features, requirements (Python 3.11+, no runtime dependencies), installation from source, running tests, building a standalone `.exe` with PyInstaller, a quick-start guide, file format descriptions, Azure DevOps connection instructions with PAT scope table, project structure, keyboard shortcuts, validation rules, and known limitations.
+- `ADOViewer.spec` is a PyInstaller spec for building a Windows standalone executable with `--windowed` (no console). The `samples/` directory is bundled as data. Pytest and heavy numerical packages are excluded from the bundle.
+- `samples/` contains three example CSV files that cover the three supported import formats: `flat_workitems.csv` (ID + flat rows, no hierarchy columns), `hierarchy.csv` (Title 1/2/3/4 hierarchy), and `parent_id_hierarchy.csv` (ID + Parent ID hierarchy).
+- `requirements-dev.txt` already existed with `pytest>=8.0`; no runtime `requirements.txt` is needed because the app uses only the Python standard library.
+- All 114 tests pass.
+
+## Implementation Complete
+
+All eight milestones in [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan.md) are implemented:
+
+1. Test harness and safe refactor - package structure, CSV IO, model/tree modules, pytest fixtures, import tests.
+2. Canonical editable model - WorkItem with local IDs, dirty tracking, add/edit/delete/reparent/move/indent/outdent.
+3. Editor UI - toolbar, details panel, right-click context menu, project save/reopen, column chooser.
+4. CSV export - Azure tree CSV, round-trip CSV, preview dialog, 1,000-item guard.
+5. Azure DevOps metadata and client - REST client (urllib, no extra deps), connection settings, PAT handling.
+6. Publish preview and dry run - PublishPlan with depth-ordered creates, field resolution, validateOnly dry run, preview dialog.
+7. Live publish - level-order creates, parent ID propagation, failure cascade, updates, reparents, PublishReport, model writeback.
+8. Packaging - README, PyInstaller spec, sample CSV files.

@@ -33,8 +33,17 @@ from adoviewer.csv_io import (
     render_csv_text,
     write_csv_rows,
 )
+from adoviewer.ado_client import AdoClient, AdoClientError, AdoConnectionSettings
 from adoviewer.project_io import load_project_file, save_project_file
+from adoviewer.publish import (
+    build_field_map,
+    build_publish_plan,
+    run_dry_run,
+    run_live_publish,
+)
 from adoviewer.tree_model import WorkItemModel
+
+_ADO_SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".adoviewer_connection.json")
 
 
 # ----------------------------
@@ -108,6 +117,11 @@ class AdoWorkItemsViewer(tk.Tk):
         self.visible_tree_columns = [column_id for column_id, *_rest in self.tree_column_specs]
         self.column_dialog = None
         self.column_chooser_vars = {}
+
+        # Azure DevOps connection (org/project persisted; PAT is session-only)
+        self.ado_connection: AdoConnectionSettings | None = None
+        self._ado_pat: str | None = None  # never persisted
+        self._load_connection_settings()
 
         self.create_widgets()
         self.create_menu()
@@ -573,9 +587,43 @@ class AdoWorkItemsViewer(tk.Tk):
             command=self.validate_model,
         )
 
+        # ---- Azure DevOps ----
+        ado_menu = tk.Menu(menu_bar, tearoff=False)
+        ado_menu.add_command(
+            label="Connection Settings...",
+            command=self.show_connection_settings_dialog,
+        )
+        ado_menu.add_command(
+            label="Test Connection",
+            command=self.test_ado_connection,
+        )
+        ado_menu.add_separator()
+        ado_menu.add_command(
+            label="Publish Preview...",
+            command=self.show_publish_preview_dialog,
+        )
+        ado_menu.add_command(
+            label="Dry Run (Validate Only)...",
+            command=self.run_publish_dry_run,
+        )
+        ado_menu.add_command(
+            label="Publish to Azure DevOps...",
+            command=self.run_live_publish,
+        )
+        ado_menu.add_separator()
+        ado_menu.add_command(
+            label="Fetch Work Item Types",
+            command=self.fetch_work_item_types,
+        )
+        ado_menu.add_command(
+            label="Fetch Fields",
+            command=self.fetch_ado_fields,
+        )
+
         menu_bar.add_cascade(label="File", menu=file_menu)
         menu_bar.add_cascade(label="Edit", menu=edit_menu)
         menu_bar.add_cascade(label="View", menu=view_menu)
+        menu_bar.add_cascade(label="Azure DevOps", menu=ado_menu)
 
         self.config(menu=menu_bar)
 
@@ -2151,6 +2199,467 @@ class AdoWorkItemsViewer(tk.Tk):
             return
 
         self.open_selected_url()
+
+    # ------------------------------------------------------------------
+    # Azure DevOps connection settings
+    # ------------------------------------------------------------------
+
+    def _load_connection_settings(self) -> None:
+        try:
+            import json as _json
+            with open(_ADO_SETTINGS_FILE, encoding="utf-8") as fh:
+                data = _json.load(fh)
+            org_url = data.get("org_url", "").strip()
+            project = data.get("project", "").strip()
+            if org_url and project:
+                self.ado_connection = AdoConnectionSettings(org_url=org_url, project=project)
+        except (FileNotFoundError, Exception):
+            self.ado_connection = None
+
+    def _save_connection_settings(self) -> None:
+        import json as _json
+        if not self.ado_connection:
+            return
+        data = {
+            "org_url": self.ado_connection.org_url,
+            "project": self.ado_connection.project,
+        }
+        try:
+            with open(_ADO_SETTINGS_FILE, "w", encoding="utf-8") as fh:
+                _json.dump(data, fh, indent=2)
+        except Exception as exc:
+            messagebox.showwarning("Settings", f"Could not save connection settings:\n{exc}")
+
+    def _require_client(self) -> AdoClient | None:
+        """Return a ready AdoClient, prompting for PAT if not set this session."""
+        if not self.ado_connection:
+            messagebox.showinfo(
+                "Azure DevOps",
+                "Configure connection settings first (Azure DevOps > Connection Settings).",
+            )
+            return None
+
+        if not self._ado_pat:
+            pat = simpledialog.askstring(
+                "Azure DevOps PAT",
+                "Enter your Personal Access Token (not saved):",
+                show="*",
+                parent=self,
+            )
+            if not pat:
+                return None
+            self._ado_pat = pat.strip()
+
+        return AdoClient(self.ado_connection, self._ado_pat)
+
+    def show_connection_settings_dialog(self) -> None:
+        """Modal dialog to configure org URL and project (PAT not stored)."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Azure DevOps Connection Settings")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.configure(background=_PALETTE["bg"])
+
+        pad = {"padx": 12, "pady": 6}
+
+        ttk.Label(dialog, text="Organization URL:", style="TLabel").grid(row=0, column=0, sticky="w", **pad)
+        org_var = tk.StringVar(value=self.ado_connection.org_url if self.ado_connection else "https://dev.azure.com/your-org")
+        org_entry = ttk.Entry(dialog, textvariable=org_var, width=52)
+        org_entry.grid(row=0, column=1, sticky="ew", **pad)
+
+        ttk.Label(dialog, text="Project:", style="TLabel").grid(row=1, column=0, sticky="w", **pad)
+        proj_var = tk.StringVar(value=self.ado_connection.project if self.ado_connection else "")
+        proj_entry = ttk.Entry(dialog, textvariable=proj_var, width=52)
+        proj_entry.grid(row=1, column=1, sticky="ew", **pad)
+
+        ttk.Label(
+            dialog,
+            text="Personal Access Token (session only - not saved):",
+            style="TLabel",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+        pat_var = tk.StringVar(value="")
+        pat_entry = ttk.Entry(dialog, textvariable=pat_var, show="*", width=52)
+        pat_entry.grid(row=2, column=1, sticky="ew", **pad)
+
+        note = ttk.Label(
+            dialog,
+            text="The PAT is only used this session and is never written to disk.",
+            style="Muted.TLabel",
+        )
+        note.grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 8))
+
+        def _save():
+            org = org_var.get().strip()
+            proj = proj_var.get().strip()
+            if not org or not proj:
+                messagebox.showwarning("Settings", "Organization URL and Project are required.", parent=dialog)
+                return
+            self.ado_connection = AdoConnectionSettings(org_url=org, project=proj)
+            pat = pat_var.get().strip()
+            if pat:
+                self._ado_pat = pat
+            else:
+                self._ado_pat = None
+            self._save_connection_settings()
+            self.status_var.set(f"Azure DevOps connection configured: {org} / {proj}")
+            dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(4, 12), padx=12, sticky="e")
+        ttk.Button(btn_frame, text="Save", command=_save).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
+
+        dialog.columnconfigure(1, weight=1)
+        org_entry.focus_set()
+        dialog.bind("<Return>", lambda _e: _save())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        self.wait_window(dialog)
+
+    def test_ado_connection(self) -> None:
+        """Attempt to reach the configured Azure DevOps org/project and report the result."""
+        client = self._require_client()
+        if not client:
+            return
+        try:
+            project_info = client.test_connection()
+            name = project_info.get("name", self.ado_connection.project)
+            state = project_info.get("state", "")
+            messagebox.showinfo(
+                "Connection OK",
+                f"Connected successfully.\n\nProject: {name}\nState: {state}",
+            )
+        except AdoClientError as exc:
+            messagebox.showerror("Connection Failed", str(exc))
+        except Exception as exc:
+            messagebox.showerror("Connection Failed", f"Unexpected error:\n{exc}")
+
+    def fetch_work_item_types(self) -> None:
+        """Fetch work item type names from Azure DevOps and display them."""
+        client = self._require_client()
+        if not client:
+            return
+        try:
+            types = client.get_work_item_types()
+            names = [t.get("name", "") for t in types if t.get("name")]
+            if not names:
+                messagebox.showinfo("Work Item Types", "No work item types returned.")
+                return
+            messagebox.showinfo(
+                "Work Item Types",
+                f"Found {len(names)} type(s):\n\n" + "\n".join(f"  {n}" for n in sorted(names)),
+            )
+        except AdoClientError as exc:
+            messagebox.showerror("Fetch Error", str(exc))
+        except Exception as exc:
+            messagebox.showerror("Fetch Error", f"Unexpected error:\n{exc}")
+
+    def fetch_ado_fields(self) -> None:
+        """Fetch field definitions from Azure DevOps and display a summary."""
+        client = self._require_client()
+        if not client:
+            return
+        try:
+            fields = client.get_fields()
+            if not fields:
+                messagebox.showinfo("Fields", "No fields returned.")
+                return
+            lines = [f"  {f.get('name','')} ({f.get('referenceName','')})" for f in fields]
+            messagebox.showinfo(
+                "Azure DevOps Fields",
+                f"Found {len(fields)} field(s):\n\n" + "\n".join(lines[:40])
+                + ("\n  ... and more" if len(lines) > 40 else ""),
+            )
+        except AdoClientError as exc:
+            messagebox.showerror("Fetch Error", str(exc))
+        except Exception as exc:
+            messagebox.showerror("Fetch Error", f"Unexpected error:\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Publish preview and dry run
+    # ------------------------------------------------------------------
+
+    def _build_plan_or_warn(self):
+        """Build a publish plan from the current model, or warn and return None."""
+        if not self.model:
+            messagebox.showinfo("Publish Preview", "Open a CSV or project first.")
+            return None
+
+        msgs = self.model.validate()
+        errors = [m for m in msgs if m.severity == "error"]
+        if errors:
+            messagebox.showwarning(
+                "Publish Preview",
+                f"Fix {len(errors)} validation error(s) before publishing.\n\n"
+                + "\n".join(m.message for m in errors[:10]),
+            )
+            return None
+
+        dirty = self.model.dirty_counts()
+        total_dirty = dirty["new"] + dirty["modified"] + dirty["deleted"]
+        if total_dirty == 0:
+            messagebox.showinfo("Publish Preview", "No unsaved changes to publish.")
+            return None
+
+        return build_publish_plan(self.model)
+
+    def show_publish_preview_dialog(self) -> None:
+        """Show a non-blocking preview of the publish plan."""
+        plan = self._build_plan_or_warn()
+        if not plan:
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Publish Preview")
+        dialog.geometry("680x500")
+        dialog.configure(background=_PALETTE["bg"])
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Publish Plan Summary", style="Heading.TLabel").pack(
+            anchor="w", padx=16, pady=(14, 4)
+        )
+        ttk.Separator(dialog, orient="horizontal").pack(fill="x", padx=16)
+
+        # Summary text
+        text_frame = ttk.Frame(dialog)
+        text_frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        sb = ttk.Scrollbar(text_frame, orient="vertical")
+        sb.pack(side="right", fill="y")
+
+        txt = tk.Text(
+            text_frame,
+            wrap="word",
+            font=_FONT,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            yscrollcommand=sb.set,
+            state="normal",
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        # Populate
+        lines = plan.summary_lines()
+        txt.insert("end", "\n".join(lines))
+
+        # Per-operation detail
+        if plan.operations:
+            txt.insert("end", "\n\nOperations:\n")
+            for op in plan.operations:
+                pid = f"parent remote ID {op.parent_remote_id}" if op.parent_remote_id is not None else "root"
+                tag = f"[{op.op_type.upper()}]"
+                remote = f"ID={op.remote_id}" if op.remote_id is not None else "new"
+                txt.insert("end", f"  {tag} depth={op.depth}  {remote}  {op.work_item_type}: {op.title[:60]!r}  ({pid})\n")
+                if op.fields_excluded:
+                    excluded_str = ", ".join(f"{n} ({r})" for n, r in op.fields_excluded[:5])
+                    txt.insert("end", f"       excluded: {excluded_str}\n")
+
+        txt.config(state="disabled")
+
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill="x", padx=16, pady=(4, 14))
+
+        note = ttk.Label(
+            btn_frame,
+            text="Connection required for Dry Run. No items will be created or modified.",
+            style="Muted.TLabel",
+        )
+        note.pack(side="left", anchor="w")
+
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side="right")
+
+    def run_publish_dry_run(self) -> None:
+        """Run a validateOnly dry run against Azure DevOps and show results."""
+        plan = self._build_plan_or_warn()
+        if not plan:
+            return
+
+        client = self._require_client()
+        if not client:
+            return
+
+        # Optionally fetch live field metadata for better field resolution.
+        field_metadata = None
+        try:
+            field_metadata = client.get_fields()
+        except AdoClientError:
+            pass  # fall back to built-in map
+
+        fm = build_field_map(field_metadata)
+
+        try:
+            results = run_dry_run(plan, client, field_map=fm)
+        except Exception as exc:
+            messagebox.showerror("Dry Run Error", f"Unexpected error during dry run:\n{exc}")
+            return
+
+        # Show results dialog
+        ok = [r for r in results if r.success]
+        failed = [r for r in results if not r.success]
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Dry Run Results")
+        dialog.geometry("680x500")
+        dialog.configure(background=_PALETTE["bg"])
+        dialog.grab_set()
+
+        summary = f"Dry run complete: {len(ok)} passed, {len(failed)} failed."
+        ttk.Label(dialog, text=summary, style="Heading.TLabel").pack(
+            anchor="w", padx=16, pady=(14, 4)
+        )
+        ttk.Separator(dialog, orient="horizontal").pack(fill="x", padx=16)
+
+        text_frame = ttk.Frame(dialog)
+        text_frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        sb = ttk.Scrollbar(text_frame, orient="vertical")
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(
+            text_frame,
+            wrap="word",
+            font=_FONT,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            yscrollcommand=sb.set,
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        for r in results:
+            status = "PASS" if r.success else "FAIL"
+            txt.insert("end", f"[{status}] {r.op.op_type.upper()} {r.op.title[:50]!r}")
+            if r.error:
+                txt.insert("end", f"\n       Error: {r.error}")
+            for msg in r.server_messages:
+                txt.insert("end", f"\n       Note: {msg}")
+            txt.insert("end", "\n")
+
+        txt.config(state="disabled")
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(
+            side="right", padx=16, pady=(0, 14)
+        )
+        self.wait_window(dialog)
+
+    def run_live_publish(self) -> None:
+        """Confirm, then publish dirty items to Azure DevOps live."""
+        plan = self._build_plan_or_warn()
+        if not plan:
+            return
+
+        creates = len(plan.creates)
+        updates = len(plan.updates)
+        reparents = len(plan.reparents)
+        warning_text = "\n".join(f"  * {w}" for w in plan.warnings) or "  (none)"
+        confirm = messagebox.askyesno(
+            "Publish to Azure DevOps",
+            f"This will make live changes to Azure DevOps.\n\n"
+            f"  Creates:   {creates}\n"
+            f"  Updates:   {updates}\n"
+            f"  Reparents: {reparents}\n\n"
+            f"Warnings:\n{warning_text}\n\nContinue?",
+        )
+        if not confirm:
+            return
+
+        client = self._require_client()
+        if not client:
+            return
+
+        field_metadata = None
+        try:
+            field_metadata = client.get_fields()
+        except AdoClientError:
+            pass
+
+        fm = build_field_map(field_metadata)
+
+        # Progress log dialog
+        progress_dialog = tk.Toplevel(self)
+        progress_dialog.title("Publishing to Azure DevOps...")
+        progress_dialog.geometry("680x400")
+        progress_dialog.configure(background=_PALETTE["bg"])
+
+        prog_txt = tk.Text(
+            progress_dialog,
+            wrap="word",
+            font=_FONT_SMALL,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            state="normal",
+        )
+        prog_txt.pack(fill="both", expand=True, padx=12, pady=12)
+
+        def _log(msg: str) -> None:
+            prog_txt.insert("end", msg + "\n")
+            prog_txt.see("end")
+            progress_dialog.update_idletasks()
+
+        _log("Starting publish...")
+
+        try:
+            report = run_live_publish(
+                plan,
+                client,
+                model=self.model,
+                field_map=fm,
+                on_progress=_log,
+            )
+        except Exception as exc:
+            progress_dialog.destroy()
+            messagebox.showerror("Publish Error", f"Unexpected error:\n{exc}")
+            return
+
+        progress_dialog.destroy()
+
+        # Show publish report dialog
+        report_dialog = tk.Toplevel(self)
+        report_dialog.title("Publish Report")
+        report_dialog.geometry("680x500")
+        report_dialog.configure(background=_PALETTE["bg"])
+        report_dialog.grab_set()
+
+        ttk.Label(
+            report_dialog,
+            text=report.summary(),
+            style="Heading.TLabel",
+        ).pack(anchor="w", padx=16, pady=(14, 4))
+        ttk.Separator(report_dialog, orient="horizontal").pack(fill="x", padx=16)
+
+        text_frame = ttk.Frame(report_dialog)
+        text_frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        sb = ttk.Scrollbar(text_frame, orient="vertical")
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(
+            text_frame,
+            wrap="word",
+            font=_FONT,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            yscrollcommand=sb.set,
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        for line in report.summary_lines():
+            txt.insert("end", line + "\n")
+        txt.config(state="disabled")
+
+        ttk.Button(report_dialog, text="Close", command=report_dialog.destroy).pack(
+            side="right", padx=16, pady=(0, 14)
+        )
+
+        # Refresh tree to reflect updated IDs and dirty state.
+        self.refresh_after_model_change(None)
+        self.update_status()
+
+        self.wait_window(report_dialog)
 
 
 # ----------------------------
