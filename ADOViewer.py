@@ -35,6 +35,7 @@ from adoviewer.csv_io import (
 )
 from adoviewer.ado_client import AdoClient, AdoClientError, AdoConnectionSettings
 from adoviewer.project_io import load_project_file, save_project_file
+from adoviewer.publish import build_field_map, build_publish_plan, run_dry_run
 from adoviewer.tree_model import WorkItemModel
 
 _ADO_SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".adoviewer_connection.json")
@@ -590,6 +591,15 @@ class AdoWorkItemsViewer(tk.Tk):
         ado_menu.add_command(
             label="Test Connection",
             command=self.test_ado_connection,
+        )
+        ado_menu.add_separator()
+        ado_menu.add_command(
+            label="Publish Preview...",
+            command=self.show_publish_preview_dialog,
+        )
+        ado_menu.add_command(
+            label="Dry Run (Validate Only)...",
+            command=self.run_publish_dry_run,
         )
         ado_menu.add_separator()
         ado_menu.add_command(
@@ -2354,6 +2364,176 @@ class AdoWorkItemsViewer(tk.Tk):
             messagebox.showerror("Fetch Error", str(exc))
         except Exception as exc:
             messagebox.showerror("Fetch Error", f"Unexpected error:\n{exc}")
+
+    # ------------------------------------------------------------------
+    # Publish preview and dry run
+    # ------------------------------------------------------------------
+
+    def _build_plan_or_warn(self):
+        """Build a publish plan from the current model, or warn and return None."""
+        if not self.model:
+            messagebox.showinfo("Publish Preview", "Open a CSV or project first.")
+            return None
+
+        msgs = self.model.validate()
+        errors = [m for m in msgs if m.severity == "error"]
+        if errors:
+            messagebox.showwarning(
+                "Publish Preview",
+                f"Fix {len(errors)} validation error(s) before publishing.\n\n"
+                + "\n".join(m.message for m in errors[:10]),
+            )
+            return None
+
+        dirty = self.model.dirty_counts()
+        total_dirty = dirty["new"] + dirty["modified"] + dirty["deleted"]
+        if total_dirty == 0:
+            messagebox.showinfo("Publish Preview", "No unsaved changes to publish.")
+            return None
+
+        return build_publish_plan(self.model)
+
+    def show_publish_preview_dialog(self) -> None:
+        """Show a non-blocking preview of the publish plan."""
+        plan = self._build_plan_or_warn()
+        if not plan:
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Publish Preview")
+        dialog.geometry("680x500")
+        dialog.configure(background=_PALETTE["bg"])
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="Publish Plan Summary", style="Heading.TLabel").pack(
+            anchor="w", padx=16, pady=(14, 4)
+        )
+        ttk.Separator(dialog, orient="horizontal").pack(fill="x", padx=16)
+
+        # Summary text
+        text_frame = ttk.Frame(dialog)
+        text_frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        sb = ttk.Scrollbar(text_frame, orient="vertical")
+        sb.pack(side="right", fill="y")
+
+        txt = tk.Text(
+            text_frame,
+            wrap="word",
+            font=_FONT,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            yscrollcommand=sb.set,
+            state="normal",
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        # Populate
+        lines = plan.summary_lines()
+        txt.insert("end", "\n".join(lines))
+
+        # Per-operation detail
+        if plan.operations:
+            txt.insert("end", "\n\nOperations:\n")
+            for op in plan.operations:
+                pid = f"parent remote ID {op.parent_remote_id}" if op.parent_remote_id is not None else "root"
+                tag = f"[{op.op_type.upper()}]"
+                remote = f"ID={op.remote_id}" if op.remote_id is not None else "new"
+                txt.insert("end", f"  {tag} depth={op.depth}  {remote}  {op.work_item_type}: {op.title[:60]!r}  ({pid})\n")
+                if op.fields_excluded:
+                    excluded_str = ", ".join(f"{n} ({r})" for n, r in op.fields_excluded[:5])
+                    txt.insert("end", f"       excluded: {excluded_str}\n")
+
+        txt.config(state="disabled")
+
+        # Buttons
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(fill="x", padx=16, pady=(4, 14))
+
+        note = ttk.Label(
+            btn_frame,
+            text="Connection required for Dry Run. No items will be created or modified.",
+            style="Muted.TLabel",
+        )
+        note.pack(side="left", anchor="w")
+
+        ttk.Button(btn_frame, text="Close", command=dialog.destroy).pack(side="right")
+
+    def run_publish_dry_run(self) -> None:
+        """Run a validateOnly dry run against Azure DevOps and show results."""
+        plan = self._build_plan_or_warn()
+        if not plan:
+            return
+
+        client = self._require_client()
+        if not client:
+            return
+
+        # Optionally fetch live field metadata for better field resolution.
+        field_metadata = None
+        try:
+            field_metadata = client.get_fields()
+        except AdoClientError:
+            pass  # fall back to built-in map
+
+        fm = build_field_map(field_metadata)
+
+        try:
+            results = run_dry_run(plan, client, field_map=fm)
+        except Exception as exc:
+            messagebox.showerror("Dry Run Error", f"Unexpected error during dry run:\n{exc}")
+            return
+
+        # Show results dialog
+        ok = [r for r in results if r.success]
+        failed = [r for r in results if not r.success]
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Dry Run Results")
+        dialog.geometry("680x500")
+        dialog.configure(background=_PALETTE["bg"])
+        dialog.grab_set()
+
+        summary = f"Dry run complete: {len(ok)} passed, {len(failed)} failed."
+        ttk.Label(dialog, text=summary, style="Heading.TLabel").pack(
+            anchor="w", padx=16, pady=(14, 4)
+        )
+        ttk.Separator(dialog, orient="horizontal").pack(fill="x", padx=16)
+
+        text_frame = ttk.Frame(dialog)
+        text_frame.pack(fill="both", expand=True, padx=16, pady=8)
+
+        sb = ttk.Scrollbar(text_frame, orient="vertical")
+        sb.pack(side="right", fill="y")
+        txt = tk.Text(
+            text_frame,
+            wrap="word",
+            font=_FONT,
+            relief="flat",
+            background=_PALETTE["surface"],
+            foreground=_PALETTE["text"],
+            yscrollcommand=sb.set,
+        )
+        txt.pack(fill="both", expand=True)
+        sb.config(command=txt.yview)
+
+        for r in results:
+            status = "PASS" if r.success else "FAIL"
+            txt.insert("end", f"[{status}] {r.op.op_type.upper()} {r.op.title[:50]!r}")
+            if r.error:
+                txt.insert("end", f"\n       Error: {r.error}")
+            for msg in r.server_messages:
+                txt.insert("end", f"\n       Note: {msg}")
+            txt.insert("end", "\n")
+
+        txt.config(state="disabled")
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(
+            side="right", padx=16, pady=(0, 14)
+        )
+        self.wait_window(dialog)
 
 
 # ----------------------------

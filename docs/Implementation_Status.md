@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 6 - Publish Preview and Dry Run**.
+Current position in the plan: **Milestone 7 - Live Publish**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -79,15 +79,34 @@ Milestone 5 is complete:
 - `tests/test_ado_client.py` covers 27 cases: auth header encoding, URL construction, HTTP methods, Content-Type, batch chunking, error codes, PAT not in error messages, return value shapes, and the `_chunks` utility.
 - All 59 tests pass.
 
+Milestone 6 is complete:
+
+- `adoviewer/publish.py` implements the publish plan builder and dry-run executor.
+- `SYSTEM_MANAGED_DISPLAY_NAMES` lists all CSV column names excluded from REST payloads (ID, Rev, date fields, user fields, Title N hierarchy columns, ADOViewer-internal keys).
+- `KNOWN_FIELD_MAP` maps common Azure DevOps display names to REST reference names as a fallback when live field metadata has not been fetched.
+- `build_field_map(field_metadata)` merges live field metadata on top of the built-in map.
+- `resolve_fields(item_fields, field_map)` splits item fields into (to_send, excluded) with a reason for each exclusion.
+- `PublishOperation` records op type, local/remote IDs, depth, parent remote ID, fields to send, and exclusions.
+- `PublishPlan` provides `creates`, `updates`, `reparents` properties and `creates_by_depth()` for level-order execution.
+- `build_publish_plan(model, field_metadata)` collects dirty items, orders creates by depth, generates update and reparent operations for modified items, and adds warnings for deleted existing items and caution fields.
+- `build_create_patch(op, field_map, org_url)` builds a JSON Patch body for creates, including the `System.LinkTypes.Hierarchy-Reverse` parent relation when the parent remote ID is known.
+- `build_update_patch(op, field_map)` builds a JSON Patch body for updates, including a `test /rev` operation when the revision is known for optimistic concurrency.
+- `run_dry_run(plan, client, field_map)` sends each create/update with `validateOnly=true`; reparents are noted as skipped.
+- The "Azure DevOps" menu now has "Publish Preview" (offline summary dialog) and "Dry Run (Validate Only)" (sends validateOnly requests and shows per-operation pass/fail).
+- `tests/test_publish.py` covers 32 cases: field map building, field resolution, plan ordering, create depth, parent remote ID propagation, update/reparent classification, rev handling, system-managed field exclusion, patch body construction, parent relation shape, dry-run URL params and Content-Type, and `PublishPlan.summary_lines()`.
+- All 91 tests pass.
+
 ## Next Planned Work
 
-Next position in the plan: **Milestone 6 - Publish Preview and Dry Run**.
+Next position in the plan: **Milestone 7 - Live Publish**.
 
 Expected next work:
 
-- Build `PublishPlan` from dirty/new nodes.
-- Sort creates by hierarchy depth.
-- Resolve field display names to reference names.
-- Exclude unsupported/system-managed fields.
-- Implement `validateOnly=true` dry run for creates/updates where supported.
-- Show preview dialog.
+- Implement live creates by level.
+- Capture returned IDs and revisions.
+- Batch get created/updated Work Items and verify links.
+- Implement field updates for existing items.
+- Implement reparent for existing items.
+- Write publish report.
+- Save local ID to remote ID mappings after each successful level.
+- Add retry from report.
