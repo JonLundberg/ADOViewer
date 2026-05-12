@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 8 - Packaging**.
+Current position in the plan: **All milestones complete**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -106,15 +106,23 @@ Milestone 7 is complete:
 - `tests/test_live_publish.py` covers 23 cases: create_work_item URL/method/Content-Type, update_work_item URL/method, get_work_item URL/method, live creates and model writeback, depth ordering, parent ID propagation to child patches, failure cascades (depth N failure skips N+1, only one HTTP call when root fails), update flow, state writeback, PublishReport properties, and on_progress callback.
 - All 114 tests pass.
 
-## Next Planned Work
+Milestone 8 is complete:
 
-Next position in the plan: **Milestone 8 - Packaging**.
+- `README.md` documents features, requirements (Python 3.11+, no runtime dependencies), installation from source, running tests, building a standalone `.exe` with PyInstaller, a quick-start guide, file format descriptions, Azure DevOps connection instructions with PAT scope table, project structure, keyboard shortcuts, validation rules, and known limitations.
+- `ADOViewer.spec` is a PyInstaller spec for building a Windows standalone executable with `--windowed` (no console). The `samples/` directory is bundled as data. Pytest and heavy numerical packages are excluded from the bundle.
+- `samples/` contains three example CSV files that cover the three supported import formats: `flat_workitems.csv` (ID + flat rows, no hierarchy columns), `hierarchy.csv` (Title 1/2/3/4 hierarchy), and `parent_id_hierarchy.csv` (ID + Parent ID hierarchy).
+- `requirements-dev.txt` already existed with `pytest>=8.0`; no runtime `requirements.txt` is needed because the app uses only the Python standard library.
+- All 114 tests pass.
 
-Expected next work:
+## Implementation Complete
 
-- Add `README.md`.
-- Add `requirements-dev.txt`.
-- Add optional `requirements.txt` if REST dependencies are used.
-- Add PyInstaller config or documented build command.
-- Add app icon if desired.
-- Add sample files.
+All eight milestones in [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan.md) are implemented:
+
+1. Test harness and safe refactor - package structure, CSV IO, model/tree modules, pytest fixtures, import tests.
+2. Canonical editable model - WorkItem with local IDs, dirty tracking, add/edit/delete/reparent/move/indent/outdent.
+3. Editor UI - toolbar, details panel, right-click context menu, project save/reopen, column chooser.
+4. CSV export - Azure tree CSV, round-trip CSV, preview dialog, 1,000-item guard.
+5. Azure DevOps metadata and client - REST client (urllib, no extra deps), connection settings, PAT handling.
+6. Publish preview and dry run - PublishPlan with depth-ordered creates, field resolution, validateOnly dry run, preview dialog.
+7. Live publish - level-order creates, parent ID propagation, failure cascade, updates, reparents, PublishReport, model writeback.
+8. Packaging - README, PyInstaller spec, sample CSV files.
