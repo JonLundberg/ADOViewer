@@ -4,7 +4,7 @@ Source plan: [ADOViewer_Implementation_Plan.md](../ADOViewer_Implementation_Plan
 
 ## Current Checkpoint
 
-Current position in the plan: **Milestone 5 - Azure DevOps Metadata and Client**.
+Current position in the plan: **Milestone 6 - Publish Preview and Dry Run**.
 
 Milestone 1 is complete: the app has a package structure, CSV IO helpers, model/tree construction modules, pytest fixtures, and import behavior tests while keeping `ADOViewer.py` as the runnable entry point.
 
@@ -64,16 +64,30 @@ Milestone 4 is complete:
 - Preview saving writes the same generated rows shown in the dialog.
 - CSV rendering tests cover quoting for commas, quotes, and newlines.
 
+Milestone 5 is complete:
+
+- `adoviewer/ado_client.py` implements `AdoConnectionSettings`, `AdoClientError`, and `AdoClient`.
+- `AdoClient` uses urllib (stdlib only) with a pluggable transport so tests never hit the network.
+- Auth is formed as Basic base64(":{pat}") at construction time; the raw PAT is discarded and never stored or logged.
+- `test_connection()` fetches the Azure DevOps project record to verify org URL and project.
+- `get_relation_types()`, `get_work_item_types()`, and `get_fields()` retrieve metadata from the REST API.
+- `batch_get_work_items(ids)` chunks requests into groups of 200 (the Azure API limit) and flattens results.
+- 401, 403, 404, and 5xx HTTP errors are converted to `AdoClientError` with safe, token-free messages.
+- Connection settings (org URL and project only, never PAT) are persisted to `~/.adoviewer_connection.json`.
+- PAT is prompted via a masked dialog each session and kept only in memory.
+- The UI has a new "Azure DevOps" menu with: Connection Settings, Test Connection, Fetch Work Item Types, and Fetch Fields commands.
+- `tests/test_ado_client.py` covers 27 cases: auth header encoding, URL construction, HTTP methods, Content-Type, batch chunking, error codes, PAT not in error messages, return value shapes, and the `_chunks` utility.
+- All 59 tests pass.
+
 ## Next Planned Work
 
-Next position in the plan: **Milestone 5 - Azure DevOps Metadata and Client**.
+Next position in the plan: **Milestone 6 - Publish Preview and Dry Run**.
 
 Expected next work:
 
-- Add connection settings dialog.
-- Add PAT handling.
-- Implement REST client with timeouts and safe error messages.
-- Implement get relation types.
-- Implement get work item types/fields.
-- Implement batch get work items.
-- Add fake client tests.
+- Build `PublishPlan` from dirty/new nodes.
+- Sort creates by hierarchy depth.
+- Resolve field display names to reference names.
+- Exclude unsupported/system-managed fields.
+- Implement `validateOnly=true` dry run for creates/updates where supported.
+- Show preview dialog.

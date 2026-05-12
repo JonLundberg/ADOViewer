@@ -33,8 +33,11 @@ from adoviewer.csv_io import (
     render_csv_text,
     write_csv_rows,
 )
+from adoviewer.ado_client import AdoClient, AdoClientError, AdoConnectionSettings
 from adoviewer.project_io import load_project_file, save_project_file
 from adoviewer.tree_model import WorkItemModel
+
+_ADO_SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".adoviewer_connection.json")
 
 
 # ----------------------------
@@ -108,6 +111,11 @@ class AdoWorkItemsViewer(tk.Tk):
         self.visible_tree_columns = [column_id for column_id, *_rest in self.tree_column_specs]
         self.column_dialog = None
         self.column_chooser_vars = {}
+
+        # Azure DevOps connection (org/project persisted; PAT is session-only)
+        self.ado_connection: AdoConnectionSettings | None = None
+        self._ado_pat: str | None = None  # never persisted
+        self._load_connection_settings()
 
         self.create_widgets()
         self.create_menu()
@@ -573,9 +581,30 @@ class AdoWorkItemsViewer(tk.Tk):
             command=self.validate_model,
         )
 
+        # ---- Azure DevOps ----
+        ado_menu = tk.Menu(menu_bar, tearoff=False)
+        ado_menu.add_command(
+            label="Connection Settings...",
+            command=self.show_connection_settings_dialog,
+        )
+        ado_menu.add_command(
+            label="Test Connection",
+            command=self.test_ado_connection,
+        )
+        ado_menu.add_separator()
+        ado_menu.add_command(
+            label="Fetch Work Item Types",
+            command=self.fetch_work_item_types,
+        )
+        ado_menu.add_command(
+            label="Fetch Fields",
+            command=self.fetch_ado_fields,
+        )
+
         menu_bar.add_cascade(label="File", menu=file_menu)
         menu_bar.add_cascade(label="Edit", menu=edit_menu)
         menu_bar.add_cascade(label="View", menu=view_menu)
+        menu_bar.add_cascade(label="Azure DevOps", menu=ado_menu)
 
         self.config(menu=menu_bar)
 
@@ -2151,6 +2180,180 @@ class AdoWorkItemsViewer(tk.Tk):
             return
 
         self.open_selected_url()
+
+    # ------------------------------------------------------------------
+    # Azure DevOps connection settings
+    # ------------------------------------------------------------------
+
+    def _load_connection_settings(self) -> None:
+        try:
+            import json as _json
+            with open(_ADO_SETTINGS_FILE, encoding="utf-8") as fh:
+                data = _json.load(fh)
+            org_url = data.get("org_url", "").strip()
+            project = data.get("project", "").strip()
+            if org_url and project:
+                self.ado_connection = AdoConnectionSettings(org_url=org_url, project=project)
+        except (FileNotFoundError, Exception):
+            self.ado_connection = None
+
+    def _save_connection_settings(self) -> None:
+        import json as _json
+        if not self.ado_connection:
+            return
+        data = {
+            "org_url": self.ado_connection.org_url,
+            "project": self.ado_connection.project,
+        }
+        try:
+            with open(_ADO_SETTINGS_FILE, "w", encoding="utf-8") as fh:
+                _json.dump(data, fh, indent=2)
+        except Exception as exc:
+            messagebox.showwarning("Settings", f"Could not save connection settings:\n{exc}")
+
+    def _require_client(self) -> AdoClient | None:
+        """Return a ready AdoClient, prompting for PAT if not set this session."""
+        if not self.ado_connection:
+            messagebox.showinfo(
+                "Azure DevOps",
+                "Configure connection settings first (Azure DevOps > Connection Settings).",
+            )
+            return None
+
+        if not self._ado_pat:
+            pat = simpledialog.askstring(
+                "Azure DevOps PAT",
+                "Enter your Personal Access Token (not saved):",
+                show="*",
+                parent=self,
+            )
+            if not pat:
+                return None
+            self._ado_pat = pat.strip()
+
+        return AdoClient(self.ado_connection, self._ado_pat)
+
+    def show_connection_settings_dialog(self) -> None:
+        """Modal dialog to configure org URL and project (PAT not stored)."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Azure DevOps Connection Settings")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+        dialog.configure(background=_PALETTE["bg"])
+
+        pad = {"padx": 12, "pady": 6}
+
+        ttk.Label(dialog, text="Organization URL:", style="TLabel").grid(row=0, column=0, sticky="w", **pad)
+        org_var = tk.StringVar(value=self.ado_connection.org_url if self.ado_connection else "https://dev.azure.com/your-org")
+        org_entry = ttk.Entry(dialog, textvariable=org_var, width=52)
+        org_entry.grid(row=0, column=1, sticky="ew", **pad)
+
+        ttk.Label(dialog, text="Project:", style="TLabel").grid(row=1, column=0, sticky="w", **pad)
+        proj_var = tk.StringVar(value=self.ado_connection.project if self.ado_connection else "")
+        proj_entry = ttk.Entry(dialog, textvariable=proj_var, width=52)
+        proj_entry.grid(row=1, column=1, sticky="ew", **pad)
+
+        ttk.Label(
+            dialog,
+            text="Personal Access Token (session only - not saved):",
+            style="TLabel",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", **pad)
+        pat_var = tk.StringVar(value="")
+        pat_entry = ttk.Entry(dialog, textvariable=pat_var, show="*", width=52)
+        pat_entry.grid(row=2, column=1, sticky="ew", **pad)
+
+        note = ttk.Label(
+            dialog,
+            text="The PAT is only used this session and is never written to disk.",
+            style="Muted.TLabel",
+        )
+        note.grid(row=3, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 8))
+
+        def _save():
+            org = org_var.get().strip()
+            proj = proj_var.get().strip()
+            if not org or not proj:
+                messagebox.showwarning("Settings", "Organization URL and Project are required.", parent=dialog)
+                return
+            self.ado_connection = AdoConnectionSettings(org_url=org, project=proj)
+            pat = pat_var.get().strip()
+            if pat:
+                self._ado_pat = pat
+            else:
+                self._ado_pat = None
+            self._save_connection_settings()
+            self.status_var.set(f"Azure DevOps connection configured: {org} / {proj}")
+            dialog.destroy()
+
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=(4, 12), padx=12, sticky="e")
+        ttk.Button(btn_frame, text="Save", command=_save).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side=tk.RIGHT)
+
+        dialog.columnconfigure(1, weight=1)
+        org_entry.focus_set()
+        dialog.bind("<Return>", lambda _e: _save())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        self.wait_window(dialog)
+
+    def test_ado_connection(self) -> None:
+        """Attempt to reach the configured Azure DevOps org/project and report the result."""
+        client = self._require_client()
+        if not client:
+            return
+        try:
+            project_info = client.test_connection()
+            name = project_info.get("name", self.ado_connection.project)
+            state = project_info.get("state", "")
+            messagebox.showinfo(
+                "Connection OK",
+                f"Connected successfully.\n\nProject: {name}\nState: {state}",
+            )
+        except AdoClientError as exc:
+            messagebox.showerror("Connection Failed", str(exc))
+        except Exception as exc:
+            messagebox.showerror("Connection Failed", f"Unexpected error:\n{exc}")
+
+    def fetch_work_item_types(self) -> None:
+        """Fetch work item type names from Azure DevOps and display them."""
+        client = self._require_client()
+        if not client:
+            return
+        try:
+            types = client.get_work_item_types()
+            names = [t.get("name", "") for t in types if t.get("name")]
+            if not names:
+                messagebox.showinfo("Work Item Types", "No work item types returned.")
+                return
+            messagebox.showinfo(
+                "Work Item Types",
+                f"Found {len(names)} type(s):\n\n" + "\n".join(f"  {n}" for n in sorted(names)),
+            )
+        except AdoClientError as exc:
+            messagebox.showerror("Fetch Error", str(exc))
+        except Exception as exc:
+            messagebox.showerror("Fetch Error", f"Unexpected error:\n{exc}")
+
+    def fetch_ado_fields(self) -> None:
+        """Fetch field definitions from Azure DevOps and display a summary."""
+        client = self._require_client()
+        if not client:
+            return
+        try:
+            fields = client.get_fields()
+            if not fields:
+                messagebox.showinfo("Fields", "No fields returned.")
+                return
+            lines = [f"  {f.get('name','')} ({f.get('referenceName','')})" for f in fields]
+            messagebox.showinfo(
+                "Azure DevOps Fields",
+                f"Found {len(fields)} field(s):\n\n" + "\n".join(lines[:40])
+                + ("\n  ... and more" if len(lines) > 40 else ""),
+            )
+        except AdoClientError as exc:
+            messagebox.showerror("Fetch Error", str(exc))
+        except Exception as exc:
+            messagebox.showerror("Fetch Error", f"Unexpected error:\n{exc}")
 
 
 # ----------------------------
